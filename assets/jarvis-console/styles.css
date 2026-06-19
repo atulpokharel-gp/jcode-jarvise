@@ -69,12 +69,38 @@ button.danger {
 }
 
 .hero,
+.status-strip,
 .command-deck,
 .status-grid,
 .agents,
 .events {
   display: grid;
   gap: 16px;
+}
+
+.status-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
+.status-strip > div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(12, 18, 28, 0.92);
+  padding: 12px 14px;
+}
+
+.status-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.status-strip strong {
+  overflow-wrap: anywhere;
 }
 
 .hero {
@@ -205,6 +231,18 @@ input[type="range"] {
 }
 
 .gate.blocked {
+  color: var(--red);
+}
+
+.state-ready {
+  color: var(--green);
+}
+
+.state-busy {
+  color: var(--amber);
+}
+
+.state-error {
   color: var(--red);
 }
 
@@ -410,6 +448,11 @@ pre {
   gap: 8px;
 }
 
+.agent.selected {
+  border-color: rgba(65, 215, 255, 0.75);
+  box-shadow: 0 0 0 1px rgba(65, 215, 255, 0.18), 0 0 28px rgba(65, 215, 255, 0.08);
+}
+
 .agent header {
   display: flex;
   justify-content: space-between;
@@ -536,8 +579,20 @@ pre {
   color: var(--muted);
 }
 
+.busy button,
+.busy input,
+.busy textarea,
+.busy select {
+  cursor: progress;
+}
+
+.busy .status-strip {
+  opacity: 0.95;
+}
+
 @media (max-width: 860px) {
   .hero,
+  .status-strip,
   .command-deck,
   .status-grid,
   .workspace-grid,
