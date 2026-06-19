@@ -48,6 +48,9 @@ let currentSettings;
 let currentWorkspacePath = "";
 let recognition;
 let lastVoiceCommand = "";
+const processedVoiceFinals = new Set();
+const recentVoiceChunks = new Map();
+const voiceChunkDedupeMs = 30000;
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -79,6 +82,28 @@ function appendMissionText(text) {
   if (!cleaned) return;
   const current = taskInput.value.trim();
   taskInput.value = current ? `${current} ${cleaned}` : cleaned;
+}
+
+function normalizeVoiceText(text) {
+  return text.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function expireVoiceChunks(nowMs) {
+  recentVoiceChunks.forEach((seenAt, chunk) => {
+    if (nowMs - seenAt > voiceChunkDedupeMs) {
+      recentVoiceChunks.delete(chunk);
+    }
+  });
+}
+
+function shouldProcessVoiceChunk(text) {
+  const key = normalizeVoiceText(text);
+  if (!key) return false;
+  const nowMs = Date.now();
+  expireVoiceChunks(nowMs);
+  if (recentVoiceChunks.has(key)) return false;
+  recentVoiceChunks.set(key, nowMs);
+  return true;
 }
 
 function gatherPlanFromDom() {
@@ -439,47 +464,56 @@ function setupVoice() {
     voiceButton.textContent = "Stop Voice";
     voiceStatus.textContent = "Listening. Say a task, then say start workers or merge finished.";
     lastVoiceCommand = "";
+    processedVoiceFinals.clear();
+    recentVoiceChunks.clear();
   };
   recognition.onend = () => {
     voiceRing.classList.remove("listening");
     voiceButton.textContent = "Start Voice";
   };
   recognition.onresult = (event) => {
-    let finalText = "";
     let interimText = "";
+    const finalChunks = [];
     for (let i = event.resultIndex; i < event.results.length; i += 1) {
-      const transcript = event.results[i][0].transcript;
-      if (event.results[i].isFinal) {
-        finalText += transcript;
-      } else {
-        interimText += transcript;
+      const result = event.results[i];
+      const transcript = result[0].transcript;
+      const cleaned = transcript.replace(/\s+/g, " ").trim();
+      if (!cleaned) continue;
+      if (result.isFinal) {
+        const resultKey = `${i}:${normalizeVoiceText(cleaned)}`;
+        if (!processedVoiceFinals.has(resultKey) && shouldProcessVoiceChunk(cleaned)) {
+          processedVoiceFinals.add(resultKey);
+          finalChunks.push(cleaned);
+        }
+        continue;
       }
+      interimText += ` ${cleaned}`;
     }
     if (interimText.trim()) {
       voiceStatus.textContent = `Listening: ${interimText.trim()}`;
     }
-    const text = finalText.trim();
-    if (!text) return;
-    const lower = text.toLowerCase();
-    const commandKey = lower.replace(/\s+/g, " ").trim();
-    if (commandKey === lastVoiceCommand) return;
-    if (lower.includes("start workers") || lower.includes("deploy agents")) {
-      lastVoiceCommand = commandKey;
-      startWorkers().catch((error) => alert(error.message));
-      return;
-    }
-    if (lower.includes("plan agents")) {
-      lastVoiceCommand = commandKey;
-      planAgents().catch((error) => alert(error.message));
-      return;
-    }
-    if (lower.includes("merge finished")) {
-      lastVoiceCommand = commandKey;
-      mergeFinished().catch((error) => alert(error.message));
-      return;
-    }
-    appendMissionText(text);
-    voiceStatus.textContent = `Added: ${text}`;
+    finalChunks.forEach((text) => {
+      const lower = text.toLowerCase();
+      const commandKey = normalizeVoiceText(text);
+      if (commandKey === lastVoiceCommand) return;
+      if (lower.includes("start workers") || lower.includes("deploy agents")) {
+        lastVoiceCommand = commandKey;
+        startWorkers().catch((error) => alert(error.message));
+        return;
+      }
+      if (lower.includes("plan agents")) {
+        lastVoiceCommand = commandKey;
+        planAgents().catch((error) => alert(error.message));
+        return;
+      }
+      if (lower.includes("merge finished")) {
+        lastVoiceCommand = commandKey;
+        mergeFinished().catch((error) => alert(error.message));
+        return;
+      }
+      appendMissionText(text);
+      voiceStatus.textContent = `Added: ${text}`;
+    });
   };
 }
 
