@@ -228,7 +228,7 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         base_branch = current_branch()
         jcode = os.environ.get("JARVIS_JCODE", shutil.which("jcode") or "jcode")
-        extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""))
+        extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
         plan = clean_plan(plan)
         if not plan:
             raise RuntimeError("Plan is empty.")
