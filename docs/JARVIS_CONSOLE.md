@@ -22,10 +22,14 @@ http://127.0.0.1:8765
 ## How It Works
 
 - The master types or dictates a mission.
+- The backend control panel shows the active project directory, Jcode binary,
+  git branch, and git clean/dirty state.
+- The folder browser can open directories, switch the active workspace, or
+  create a new git-initialized project.
 - The console creates a small plan and decides how many worker scopes to use.
 - The plan cards are editable before launch, so the master can change roles or
   scope text before workers start.
-- Worker launch requires a clean root worktree so every branch has a clear base.
+- Worker launch requires a clean active workspace so every branch has a clear base.
 - Each worker gets its own branch and worktree under `.jcode/jarvis-console/`.
 - Each worker runs `jcode run` with scoped instructions.
 - When a worker exits, the console commits any remaining dirty changes in that

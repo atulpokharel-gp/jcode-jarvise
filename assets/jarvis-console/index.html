@@ -61,6 +61,10 @@
 
       <section class="metric-grid">
         <article>
+          <span>Workspace</span>
+          <strong id="metricWorkspace">-</strong>
+        </article>
+        <article>
           <span>Branch</span>
           <strong id="metricBranch">-</strong>
         </article>
@@ -75,6 +79,38 @@
         <article>
           <span>Conflicts</span>
           <strong id="metricConflict">0</strong>
+        </article>
+      </section>
+
+      <section class="workspace-grid">
+        <article>
+          <div class="section-head compact">
+            <h2>Backend Control</h2>
+            <span id="backendStatus" class="badge">checking</span>
+          </div>
+          <div class="backend-lines">
+            <small>Jcode: <span id="backendJcode">-</span></small>
+            <small>Project: <span id="backendWorkspace">-</span></small>
+            <small>Git: <span id="backendGit">-</span></small>
+          </div>
+          <div class="controls">
+            <button id="openWorkspaceButton">Browse Workspace</button>
+            <button id="setWorkspaceButton">Set Workspace</button>
+          </div>
+          <input id="workspacePath" placeholder="C:\path\to\project" />
+        </article>
+
+        <article>
+          <div class="section-head compact">
+            <h2>Create Project</h2>
+            <span class="badge">git ready</span>
+          </div>
+          <div class="create-row">
+            <input id="newProjectParent" placeholder="Parent folder" />
+            <input id="newProjectName" placeholder="Project name" />
+            <button id="createProjectButton" class="primary">Create</button>
+          </div>
+          <div id="folderList" class="folder-list"></div>
         </article>
       </section>
 

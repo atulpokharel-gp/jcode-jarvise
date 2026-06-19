@@ -62,6 +62,7 @@ def default_state() -> dict[str, Any]:
 def default_settings() -> dict[str, Any]:
     return {
         "strategy": "balanced",
+        "workspace": {"path": str(ROOT)},
         "providers": {
             "openai": {
                 "label": "OpenAI",
@@ -165,6 +166,10 @@ def credential_file_has_key(provider: dict[str, Any]) -> bool:
 
 def save_settings(incoming: dict[str, Any]) -> dict[str, Any]:
     settings = load_settings(include_secrets=True)
+    if isinstance(incoming.get("workspace"), dict):
+        workspace_path = str(incoming["workspace"].get("path") or "").strip()
+        if workspace_path:
+            settings["workspace"] = {"path": str(Path(workspace_path).expanduser().resolve())}
     if "strategy" in incoming:
         strategy = str(incoming["strategy"]).strip()
         if strategy in {"cost_saver", "balanced", "quality"}:
@@ -214,7 +219,43 @@ def event(state: dict[str, Any], message: str) -> None:
 
 
 def git_status() -> str:
-    result = run(["git", "status", "--short"], check=False)
+    result = run(["git", "status", "--short"], cwd=active_workspace(), check=False)
+    text = (result.stdout + result.stderr).strip()
+    return text or "Clean"
+
+
+def active_workspace() -> Path:
+    settings = load_settings(include_secrets=True)
+    raw_path = str(settings.get("workspace", {}).get("path") or str(ROOT))
+    return Path(os.path.expandvars(os.path.expanduser(raw_path))).resolve()
+
+
+def is_git_repo(path: Path) -> bool:
+    result = run(["git", "rev-parse", "--is-inside-work-tree"], cwd=path, check=False)
+    return result.returncode == 0 and result.stdout.strip() == "true"
+
+
+def workspace_info(path: Path | None = None) -> dict[str, Any]:
+    workspace = (path or active_workspace()).resolve()
+    exists = workspace.exists() and workspace.is_dir()
+    git_repo = exists and is_git_repo(workspace)
+    info = {
+        "path": str(workspace),
+        "exists": exists,
+        "is_git_repo": git_repo,
+        "branch": "not a git repo",
+        "dirty": False,
+        "git_status": "Not a git repo",
+    }
+    if git_repo:
+        info["branch"] = current_branch(workspace)
+        info["dirty"] = dirty(workspace)
+        info["git_status"] = git_status_for(workspace)
+    return info
+
+
+def git_status_for(path: Path) -> str:
+    result = run(["git", "status", "--short"], cwd=path, check=False)
     text = (result.stdout + result.stderr).strip()
     return text or "Clean"
 
@@ -236,9 +277,11 @@ def state_summary(state: dict[str, Any]) -> dict[str, int]:
 
 
 def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
-    state["git_status"] = git_status()
-    state["root_dirty"] = dirty(ROOT)
-    state["current_branch"] = current_branch()
+    workspace = workspace_info()
+    state["workspace"] = workspace
+    state["git_status"] = workspace["git_status"]
+    state["root_dirty"] = workspace["dirty"] or not workspace["is_git_repo"]
+    state["current_branch"] = workspace["branch"]
     state["summary"] = state_summary(state)
     try:
         state["jcode_path"] = resolve_jcode_binary()
@@ -267,8 +310,8 @@ def settings_summary() -> dict[str, Any]:
     }
 
 
-def current_branch() -> str:
-    result = run(["git", "branch", "--show-current"], check=False)
+def current_branch(cwd: Path | None = None) -> str:
+    result = run(["git", "branch", "--show-current"], cwd=cwd or active_workspace(), check=False)
     branch = result.stdout.strip()
     return branch or "HEAD"
 
@@ -323,6 +366,62 @@ def last_commit(cwd: Path) -> str:
 
 def dirty(cwd: Path) -> bool:
     return bool(run(["git", "status", "--porcelain"], cwd=cwd, check=False).stdout.strip())
+
+
+def list_workspace_path(raw_path: str | None) -> dict[str, Any]:
+    base = Path(os.path.expandvars(os.path.expanduser(raw_path or str(active_workspace())))).resolve()
+    if not base.exists() or not base.is_dir():
+        raise RuntimeError(f"Directory does not exist: {base}")
+    entries = []
+    try:
+        children = sorted(base.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower()))
+    except PermissionError as exc:
+        raise RuntimeError(f"Permission denied: {base}") from exc
+    for child in children[:300]:
+        entries.append(
+            {
+                "name": child.name,
+                "path": str(child),
+                "is_dir": child.is_dir(),
+                "is_git_repo": child.is_dir() and (child / ".git").exists(),
+            }
+        )
+    parent = str(base.parent) if base.parent != base else ""
+    return {"path": str(base), "parent": parent, "entries": entries}
+
+
+def set_workspace(raw_path: str) -> dict[str, Any]:
+    workspace = Path(os.path.expandvars(os.path.expanduser(raw_path))).resolve()
+    if not workspace.exists() or not workspace.is_dir():
+        raise RuntimeError(f"Workspace directory does not exist: {workspace}")
+    settings = load_settings(include_secrets=True)
+    settings["workspace"] = {"path": str(workspace)}
+    SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
+    state = load_state()
+    event(state, f"Workspace set to {workspace}")
+    save_state(state)
+    return hydrate_state(state)
+
+
+def create_workspace(parent_raw: str, name: str, init_git: bool = True) -> dict[str, Any]:
+    parent = Path(os.path.expandvars(os.path.expanduser(parent_raw or str(ROOT)))).resolve()
+    clean_name = name.strip().replace("\\", "-").replace("/", "-")
+    if not clean_name:
+        raise RuntimeError("Project name is empty.")
+    if not parent.exists() or not parent.is_dir():
+        raise RuntimeError(f"Parent directory does not exist: {parent}")
+    target = (parent / clean_name).resolve()
+    if target.exists() and any(target.iterdir()):
+        raise RuntimeError(f"Project already exists and is not empty: {target}")
+    target.mkdir(parents=True, exist_ok=True)
+    readme = target / "README.md"
+    if not readme.exists():
+        readme.write_text(f"# {clean_name}\n", encoding="utf-8")
+    if init_git and not is_git_repo(target):
+        run(["git", "init"], cwd=target)
+        run(["git", "add", "README.md"], cwd=target, check=False)
+        run(["git", "commit", "-m", "Initial project"], cwd=target, check=False)
+    return set_workspace(str(target))
 
 
 def clean_plan(plan: Any, max_agents: int = 5) -> list[dict[str, str]]:
@@ -512,10 +611,15 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
     with STATE_LOCK:
         state = load_state()
         poll_processes(state)
-        if dirty(ROOT):
-            raise RuntimeError("Root worktree is dirty. Commit or stash before launching workers.")
+        workspace = active_workspace()
+        if not workspace.exists() or not workspace.is_dir():
+            raise RuntimeError(f"Workspace does not exist: {workspace}")
+        if not is_git_repo(workspace):
+            raise RuntimeError("Selected workspace is not a git repo. Create a project or run git init.")
+        if dirty(workspace):
+            raise RuntimeError("Workspace is dirty. Commit or stash before launching workers.")
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-        base_branch = current_branch()
+        base_branch = current_branch(workspace)
         jcode = resolve_jcode_binary()
         extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
         settings = load_settings(include_secrets=True)
@@ -527,7 +631,7 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
             agent_id = f"agent-{stamp}-{index}"
             branch = f"jarvis/{stamp}/{index}"
             worktree = WORKTREE_ROOT / stamp / f"agent-{index}"
-            run(["git", "worktree", "add", "-B", branch, str(worktree), "HEAD"])
+            run(["git", "worktree", "add", "-B", branch, str(worktree), "HEAD"], cwd=workspace)
             log_path = LOG_DIR / f"{agent_id}.log"
             agent = {
                 "id": agent_id,
@@ -618,18 +722,21 @@ def merge_finished() -> dict[str, Any]:
     with STATE_LOCK:
         state = load_state()
         poll_processes(state)
-        if dirty(ROOT):
-            raise RuntimeError("Root worktree is dirty. Commit or stash before master merge.")
+        workspace = active_workspace()
+        if not is_git_repo(workspace):
+            raise RuntimeError("Selected workspace is not a git repo.")
+        if dirty(workspace):
+            raise RuntimeError("Workspace is dirty. Commit or stash before master merge.")
         merged = []
         for agent in state.get("agents", []):
             if agent.get("status") != "complete" or agent.get("merged"):
                 continue
             branch = agent.get("branch")
-            result = run(["git", "merge", "--no-ff", branch, "-m", f"merge {branch}"], check=False)
+            result = run(["git", "merge", "--no-ff", branch, "-m", f"merge {branch}"], cwd=workspace, check=False)
             if result.returncode != 0:
                 agent["status"] = "conflict"
                 agent["merge_output"] = (result.stdout + result.stderr).strip()[-4000:]
-                conflicts = run(["git", "diff", "--name-only", "--diff-filter=U"], check=False)
+                conflicts = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=workspace, check=False)
                 agent["conflicts"] = conflicts.stdout.splitlines()
                 event(state, f"Conflict while merging {branch}. Master intervention required.")
                 save_state(state)
@@ -673,6 +780,10 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/settings":
                 self.send_json(load_settings(include_secrets=False))
+                return
+            if parsed.path == "/api/workspace/list":
+                raw_path = parse_qs(parsed.query).get("path", [""])[0]
+                self.send_json(list_workspace_path(raw_path or None))
                 return
             route = "index.html" if parsed.path == "/" else parsed.path.lstrip("/")
             path = (ASSET_DIR / route).resolve()
@@ -729,6 +840,18 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/settings":
                 self.send_json(save_settings(body))
+                return
+            if self.path == "/api/workspace/set":
+                path = str(body.get("path") or "").strip()
+                if not path:
+                    raise RuntimeError("Missing workspace path.")
+                self.send_json(set_workspace(path))
+                return
+            if self.path == "/api/workspace/create":
+                parent = str(body.get("parent") or "").strip()
+                name = str(body.get("name") or "").strip()
+                init_git = bool(body.get("init_git", True))
+                self.send_json(create_workspace(parent, name, init_git))
                 return
             self.send_error(404)
         except Exception as exc:  # Keep UI errors readable.

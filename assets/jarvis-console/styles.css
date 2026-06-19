@@ -260,19 +260,21 @@ input[type="range"] {
   }
 }
 
-.status-grid {
+.status-grid,
+.workspace-grid {
   grid-template-columns: 1fr 1fr;
   margin-bottom: 18px;
 }
 
 .metric-grid {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
   margin-bottom: 18px;
 }
 
-.metric-grid article {
+.metric-grid article,
+.workspace-grid article {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(16, 24, 36, 0.76);
@@ -345,6 +347,50 @@ pre {
   justify-content: space-between;
   align-items: center;
   margin: 18px 0 10px;
+}
+
+.section-head.compact {
+  margin: 0 0 10px;
+}
+
+.backend-lines {
+  display: grid;
+  gap: 8px;
+}
+
+.backend-lines span {
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.create-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 180px auto;
+  gap: 10px;
+}
+
+.folder-list {
+  display: grid;
+  gap: 8px;
+  max-height: 220px;
+  overflow: auto;
+  margin-top: 12px;
+}
+
+.folder-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 10px;
+  align-items: center;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(12, 18, 28, 0.92);
+  padding: 9px 10px;
+}
+
+.folder-item small {
+  color: var(--muted);
+  overflow-wrap: anywhere;
 }
 
 .badge {
@@ -494,11 +540,13 @@ pre {
   .hero,
   .command-deck,
   .status-grid,
+  .workspace-grid,
   .metric-grid,
   .agents,
   .inspector-body,
   .planner-controls,
-  .provider-settings {
+  .provider-settings,
+  .create-row {
     grid-template-columns: 1fr;
   }
 

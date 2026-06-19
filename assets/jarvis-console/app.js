@@ -16,6 +16,7 @@ const agentLimit = document.querySelector("#agentLimit");
 const agentLimitValue = document.querySelector("#agentLimitValue");
 const launchGate = document.querySelector("#launchGate");
 const metricBranch = document.querySelector("#metricBranch");
+const metricWorkspace = document.querySelector("#metricWorkspace");
 const metricRunning = document.querySelector("#metricRunning");
 const metricComplete = document.querySelector("#metricComplete");
 const metricConflict = document.querySelector("#metricConflict");
@@ -28,11 +29,23 @@ const providerSettings = document.querySelector("#providerSettings");
 const strategySelect = document.querySelector("#strategySelect");
 const saveSettings = document.querySelector("#saveSettings");
 const reloadSettings = document.querySelector("#reloadSettings");
+const backendStatus = document.querySelector("#backendStatus");
+const backendJcode = document.querySelector("#backendJcode");
+const backendWorkspace = document.querySelector("#backendWorkspace");
+const backendGit = document.querySelector("#backendGit");
+const workspacePath = document.querySelector("#workspacePath");
+const openWorkspaceButton = document.querySelector("#openWorkspaceButton");
+const setWorkspaceButton = document.querySelector("#setWorkspaceButton");
+const newProjectParent = document.querySelector("#newProjectParent");
+const newProjectName = document.querySelector("#newProjectName");
+const createProjectButton = document.querySelector("#createProjectButton");
+const folderList = document.querySelector("#folderList");
 
 let currentPlan = [];
 let latestAgents = [];
 let selectedAgentId = "";
 let currentSettings;
+let currentWorkspacePath = "";
 let recognition;
 
 async function api(path, options = {}) {
@@ -76,6 +89,9 @@ function gatherPlanFromDom() {
 
 function renderMetrics(state) {
   const summary = state.summary || {};
+  const workspace = state.workspace || {};
+  currentWorkspacePath = workspace.path || "";
+  metricWorkspace.textContent = currentWorkspacePath ? currentWorkspacePath.split(/[\\/]/).pop() : "-";
   metricBranch.textContent = state.current_branch || "-";
   metricRunning.textContent = summary.running || 0;
   metricComplete.textContent = summary.complete || 0;
@@ -93,6 +109,17 @@ function renderMetrics(state) {
   }
   launchGate.className = `gate ${dirty || missingJcode || !availableProviders.length ? "blocked" : "ready"}`;
   startButton.disabled = dirty || missingJcode || !availableProviders.length;
+  backendStatus.textContent = state.jcode_available ? "online" : "blocked";
+  backendStatus.className = `badge ${state.jcode_available ? "status-complete" : "status-failed"}`;
+  backendJcode.textContent = state.jcode_path || "-";
+  backendWorkspace.textContent = workspace.path || "-";
+  backendGit.textContent = workspace.is_git_repo ? `${workspace.branch} / ${workspace.dirty ? "dirty" : "clean"}` : "not a git repo";
+  if (document.activeElement !== workspacePath) {
+    workspacePath.value = workspace.path || "";
+  }
+  if (document.activeElement !== newProjectParent) {
+    newProjectParent.value = workspace.path || "";
+  }
 }
 
 function renderPlan(plan) {
@@ -218,6 +245,64 @@ async function refresh() {
   renderAgents(state.agents || []);
   renderEvents(state.events || []);
   await refreshAgentLog();
+}
+
+async function browseWorkspace(path = workspacePath.value || currentWorkspacePath) {
+  const response = await api(`/api/workspace/list?path=${encodeURIComponent(path || "")}`);
+  workspacePath.value = response.path;
+  newProjectParent.value = response.path;
+  folderList.innerHTML = "";
+  if (response.parent) {
+    const parentNode = document.createElement("div");
+    parentNode.className = "folder-item";
+    parentNode.innerHTML = `<small>..</small><button data-browse="${escapeHtml(response.parent)}">Open</button>`;
+    folderList.appendChild(parentNode);
+  }
+  response.entries.forEach((entry) => {
+    const node = document.createElement("div");
+    node.className = "folder-item";
+    const label = entry.is_dir ? `[folder] ${entry.name}` : entry.name;
+    node.innerHTML = `
+      <small>${escapeHtml(label)}${entry.is_git_repo ? " / git" : ""}</small>
+      ${
+        entry.is_dir
+          ? `<span><button data-browse="${escapeHtml(entry.path)}">Open</button> <button data-use="${escapeHtml(entry.path)}">Use</button></span>`
+          : "<span></span>"
+      }
+    `;
+    folderList.appendChild(node);
+  });
+  folderList.querySelectorAll("[data-browse]").forEach((button) => {
+    button.addEventListener("click", () => browseWorkspace(button.dataset.browse).catch((error) => alert(error.message)));
+  });
+  folderList.querySelectorAll("[data-use]").forEach((button) => {
+    button.addEventListener("click", () => setWorkspace(button.dataset.use).catch((error) => alert(error.message)));
+  });
+}
+
+async function setWorkspace(path = workspacePath.value) {
+  await api("/api/workspace/set", {
+    method: "POST",
+    body: JSON.stringify({ path }),
+  });
+  await refresh();
+  await browseWorkspace(path);
+}
+
+async function createProject() {
+  const parent = newProjectParent.value.trim() || currentWorkspacePath;
+  const name = newProjectName.value.trim();
+  if (!name) {
+    alert("Project name is required.");
+    return;
+  }
+  await api("/api/workspace/create", {
+    method: "POST",
+    body: JSON.stringify({ parent, name, init_git: true }),
+  });
+  newProjectName.value = "";
+  await refresh();
+  await browseWorkspace(`${parent}\\${name}`);
 }
 
 function modelsToText(models) {
@@ -379,6 +464,9 @@ planButton.addEventListener("click", () => planAgents().catch((error) => alert(e
 startButton.addEventListener("click", () => startWorkers().catch((error) => alert(error.message)));
 mergeButton.addEventListener("click", () => mergeFinished().catch((error) => alert(error.message)));
 refreshButton.addEventListener("click", () => refresh().catch((error) => alert(error.message)));
+openWorkspaceButton.addEventListener("click", () => browseWorkspace().catch((error) => alert(error.message)));
+setWorkspaceButton.addEventListener("click", () => setWorkspace().catch((error) => alert(error.message)));
+createProjectButton.addEventListener("click", () => createProject().catch((error) => alert(error.message)));
 settingsButton.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
 closeSettings.addEventListener("click", () => {
   settingsModal.hidden = true;
@@ -410,4 +498,5 @@ setupVoice();
 refresh().catch((error) => {
   gitStatus.textContent = error.message;
 });
+browseWorkspace().catch(() => {});
 setInterval(() => refresh().catch(() => {}), 1500);
