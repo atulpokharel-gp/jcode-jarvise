@@ -9,13 +9,18 @@
   <body>
     <main class="shell">
       <section class="hero">
-        <div>
+        <div class="hero-copy">
           <p class="eyebrow">Jcode Swarm Control</p>
           <h1>Jarvis Master Console</h1>
           <p class="subtle">
-            Plan a task, deploy worker Jcode agents, track their branches, and
-            merge finished work under master review.
+            Orchestrate a tight swarm, monitor live branches, and push polished work
+            through a command-center workflow built for fast reviews.
           </p>
+          <div class="hero-pills" aria-label="Console highlights">
+            <span>live routing</span>
+            <span>branch telemetry</span>
+            <span>merge ready</span>
+          </div>
         </div>
         <div class="orb" aria-hidden="true">
           <span></span>
@@ -28,8 +33,9 @@
           <textarea
             id="task"
             rows="6"
-            placeholder="Build the feature, fix the bug, or split a larger coding task into worker scopes..."
+            placeholder="Build the feature, fix the bug, or split a larger task into worker scopes..."
           ></textarea>
+          <p class="subtle task-hint">Tip: describe the end state, constraints, and verification targets for better swarm planning.</p>
           <div class="controls">
             <button id="planButton">Plan Agents</button>
             <button id="startButton" class="primary">Start Workers</button>
