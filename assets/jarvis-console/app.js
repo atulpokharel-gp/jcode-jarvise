@@ -47,6 +47,7 @@ let selectedAgentId = "";
 let currentSettings;
 let currentWorkspacePath = "";
 let recognition;
+let lastVoiceCommand = "";
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -71,6 +72,13 @@ function escapeHtml(value) {
 
 function statusClass(status) {
   return `status-${String(status || "planned").toLowerCase()}`;
+}
+
+function appendMissionText(text) {
+  const cleaned = text.replace(/\s+/g, " ").trim();
+  if (!cleaned) return;
+  const current = taskInput.value.trim();
+  taskInput.value = current ? `${current} ${cleaned}` : cleaned;
 }
 
 function gatherPlanFromDom() {
@@ -430,30 +438,48 @@ function setupVoice() {
     voiceRing.classList.add("listening");
     voiceButton.textContent = "Stop Voice";
     voiceStatus.textContent = "Listening. Say a task, then say start workers or merge finished.";
+    lastVoiceCommand = "";
   };
   recognition.onend = () => {
     voiceRing.classList.remove("listening");
     voiceButton.textContent = "Start Voice";
   };
   recognition.onresult = (event) => {
-    let text = "";
+    let finalText = "";
+    let interimText = "";
     for (let i = event.resultIndex; i < event.results.length; i += 1) {
-      text += event.results[i][0].transcript;
+      const transcript = event.results[i][0].transcript;
+      if (event.results[i].isFinal) {
+        finalText += transcript;
+      } else {
+        interimText += transcript;
+      }
     }
+    if (interimText.trim()) {
+      voiceStatus.textContent = `Listening: ${interimText.trim()}`;
+    }
+    const text = finalText.trim();
+    if (!text) return;
     const lower = text.toLowerCase();
+    const commandKey = lower.replace(/\s+/g, " ").trim();
+    if (commandKey === lastVoiceCommand) return;
     if (lower.includes("start workers") || lower.includes("deploy agents")) {
+      lastVoiceCommand = commandKey;
       startWorkers().catch((error) => alert(error.message));
       return;
     }
     if (lower.includes("plan agents")) {
+      lastVoiceCommand = commandKey;
       planAgents().catch((error) => alert(error.message));
       return;
     }
     if (lower.includes("merge finished")) {
+      lastVoiceCommand = commandKey;
       mergeFinished().catch((error) => alert(error.message));
       return;
     }
-    taskInput.value = `${taskInput.value} ${text}`.trim();
+    appendMissionText(text);
+    voiceStatus.textContent = `Added: ${text}`;
   };
 }
 
