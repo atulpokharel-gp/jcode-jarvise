@@ -10,56 +10,23 @@
     <main class="shell">
       <section class="hero">
         <div>
-          <p class="eyebrow">Jcode Swarm Control</p>
-          <h1>Jarvis Master Console</h1>
+          <p class="eyebrow">Jarvis Control Plane</p>
+          <h1>Direct the Jcode swarm</h1>
           <p class="subtle">
-            Plan a task, deploy worker Jcode agents, track their branches, and
-            merge finished work under master review.
+            Turn a mission into scoped workers, watch their branches move, and
+            bring finished work back under master review.
           </p>
+          <div class="controls">
+            <button id="refreshButton">Refresh Console</button>
+            <button id="settingsButton">Settings</button>
+          </div>
         </div>
         <div class="orb" aria-hidden="true">
           <span></span>
         </div>
       </section>
 
-      <section class="command-deck">
-        <div class="task-box">
-          <label for="task">Mission</label>
-          <textarea
-            id="task"
-            rows="6"
-            placeholder="Build the feature, fix the bug, or split a larger coding task into worker scopes..."
-          ></textarea>
-          <div class="controls">
-            <button id="planButton">Plan Agents</button>
-            <button id="startButton" class="primary">Start Workers</button>
-            <button id="mergeButton" class="danger">Merge Finished</button>
-            <button id="settingsButton">Settings</button>
-            <button id="refreshButton">Refresh</button>
-          </div>
-          <div class="planner-controls">
-            <label for="agentLimit">Agent limit <span id="agentLimitValue">3</span></label>
-            <input id="agentLimit" type="range" min="1" max="5" value="3" />
-            <span id="launchGate" class="gate">Checking git state...</span>
-          </div>
-        </div>
-
-        <aside class="voice-panel">
-          <div class="voice-ring" id="voiceRing">
-            <div></div>
-            <span>Voice</span>
-          </div>
-          <button id="voiceButton">Start Voice</button>
-          <p id="voiceStatus" class="subtle">Speech commands use the browser microphone.</p>
-          <div class="quick-grid">
-            <button data-template="Plan this task and deploy the right number of agents: ">Plan</button>
-            <button data-template="Deploy three agents to work on: ">3 Agents</button>
-            <button data-template="Review and merge completed agent branches for: ">Merge</button>
-          </div>
-        </aside>
-      </section>
-
-      <section class="metric-grid">
+      <section class="metric-grid" aria-label="Workspace summary">
         <article>
           <span>Workspace</span>
           <strong id="metricWorkspace">-</strong>
@@ -82,12 +49,52 @@
         </article>
       </section>
 
-      <section class="workspace-grid">
+      <section class="command-deck">
+        <div class="task-box">
+          <p class="eyebrow">Mission Builder</p>
+          <label for="task">Mission</label>
+          <textarea
+            id="task"
+            rows="6"
+            placeholder="Build the feature, fix the bug, or split a larger coding task into worker scopes..."
+          ></textarea>
+          <div class="controls">
+            <button id="planButton">Plan Agents</button>
+            <button id="startButton" class="primary">Start Workers</button>
+            <button id="mergeButton" class="danger">Merge Finished</button>
+          </div>
+          <div class="planner-controls">
+            <label for="agentLimit">Agent limit <span id="agentLimitValue">3</span></label>
+            <input id="agentLimit" type="range" min="1" max="5" value="3" />
+            <span id="launchGate" class="gate">Checking git state...</span>
+          </div>
+        </div>
+
+        <aside class="voice-panel" aria-label="Voice command center">
+          <div class="voice-ring" id="voiceRing">
+            <div></div>
+            <span>Voice</span>
+          </div>
+          <button id="voiceButton">Start Voice</button>
+          <p id="voiceStatus" class="subtle">Voice input is idle. Start the mic to dictate a mission or command.</p>
+          <div class="quick-grid">
+            <button data-template="Plan this task and deploy the right number of agents: ">Plan</button>
+            <button data-template="Deploy three agents to work on: ">3 Agents</button>
+            <button data-template="Review and merge completed agent branches for: ">Merge</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="workspace-grid" aria-label="Backend and workspace setup">
         <article>
           <div class="section-head compact">
             <h2>Backend Control</h2>
             <span id="backendStatus" class="badge">checking</span>
           </div>
+          <p class="subtle">
+            Confirm the local Jcode backend, active workspace, and git readiness before
+            launching workers.
+          </p>
           <div class="backend-lines">
             <small>Jcode: <span id="backendJcode">-</span></small>
             <small>Project: <span id="backendWorkspace">-</span></small>
@@ -102,9 +109,13 @@
 
         <article>
           <div class="section-head compact">
-            <h2>Create Project</h2>
+            <h2>Workspace Launcher</h2>
             <span class="badge">git ready</span>
           </div>
+          <p class="subtle">
+            Open an existing folder, switch the active path, or create a fresh project
+            for the swarm to work inside.
+          </p>
           <div class="create-row">
             <input id="newProjectParent" placeholder="Parent folder" />
             <input id="newProjectName" placeholder="Project name" />
@@ -116,11 +127,17 @@
 
       <section class="status-grid">
         <article>
-          <h2>Git State</h2>
+          <div class="section-head compact">
+            <h2>Git State</h2>
+            <span class="badge">workspace</span>
+          </div>
           <pre id="gitStatus">Loading...</pre>
         </article>
         <article>
-          <h2>Master Plan</h2>
+          <div class="section-head compact">
+            <h2>Master Plan</h2>
+            <span class="badge">editable</span>
+          </div>
           <div id="plan" class="plan-list"></div>
         </article>
       </section>
@@ -146,7 +163,7 @@
 
       <section>
         <div class="section-head">
-          <h2>Event Stream</h2>
+          <h2>Dashboard Event Stream</h2>
           <span class="badge">local only</span>
         </div>
         <div id="events" class="events"></div>
