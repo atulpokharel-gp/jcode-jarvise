@@ -105,6 +105,12 @@ def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
     state["root_dirty"] = dirty(ROOT)
     state["current_branch"] = current_branch()
     state["summary"] = state_summary(state)
+    try:
+        state["jcode_path"] = resolve_jcode_binary()
+        state["jcode_available"] = True
+    except RuntimeError as exc:
+        state["jcode_path"] = str(exc)
+        state["jcode_available"] = False
     return state
 
 
@@ -112,6 +118,49 @@ def current_branch() -> str:
     result = run(["git", "branch", "--show-current"], check=False)
     branch = result.stdout.strip()
     return branch or "HEAD"
+
+
+def resolve_jcode_binary() -> str:
+    configured = os.environ.get("JARVIS_JCODE")
+    if configured:
+        expanded = os.path.expandvars(os.path.expanduser(configured))
+        if Path(expanded).exists() or shutil.which(expanded):
+            return expanded
+        raise RuntimeError(f"JARVIS_JCODE points to a missing executable: {configured}")
+
+    discovered = shutil.which("jcode")
+    if discovered:
+        return discovered
+
+    candidates: list[Path] = []
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA")
+        if local_app_data:
+            root = Path(local_app_data) / "jcode"
+            candidates.extend(
+                [
+                    root / "bin" / "jcode.exe",
+                    root / "builds" / "current" / "jcode.exe",
+                    root / "builds" / "stable" / "jcode.exe",
+                ]
+            )
+    else:
+        home = Path.home()
+        candidates.extend(
+            [
+                home / ".local" / "bin" / "jcode",
+                home / ".jcode" / "builds" / "current" / "jcode",
+                home / ".jcode" / "builds" / "stable" / "jcode",
+            ]
+        )
+
+    for candidate in candidates:
+        if candidate.exists():
+            return str(candidate)
+
+    raise RuntimeError(
+        "Could not find jcode executable. Set JARVIS_JCODE to the full path of jcode.exe."
+    )
 
 
 def last_commit(cwd: Path) -> str:
@@ -227,7 +276,7 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
             raise RuntimeError("Root worktree is dirty. Commit or stash before launching workers.")
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         base_branch = current_branch()
-        jcode = os.environ.get("JARVIS_JCODE", shutil.which("jcode") or "jcode")
+        jcode = resolve_jcode_binary()
         extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
         plan = clean_plan(plan)
         if not plan:

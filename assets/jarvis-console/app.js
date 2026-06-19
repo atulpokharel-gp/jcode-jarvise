@@ -71,9 +71,14 @@ function renderMetrics(state) {
   metricComplete.textContent = summary.complete || 0;
   metricConflict.textContent = summary.conflict || 0;
   const dirty = Boolean(state.root_dirty);
-  launchGate.textContent = dirty ? "Commit or stash before launch" : "Ready to launch";
-  launchGate.className = `gate ${dirty ? "blocked" : "ready"}`;
-  startButton.disabled = dirty;
+  const missingJcode = state.jcode_available === false;
+  if (missingJcode) {
+    launchGate.textContent = state.jcode_path || "Jcode executable not found";
+  } else {
+    launchGate.textContent = dirty ? "Commit or stash before launch" : `Ready: ${state.jcode_path}`;
+  }
+  launchGate.className = `gate ${dirty || missingJcode ? "blocked" : "ready"}`;
+  startButton.disabled = dirty || missingJcode;
 }
 
 function renderPlan(plan) {

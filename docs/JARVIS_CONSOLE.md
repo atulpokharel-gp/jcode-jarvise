@@ -65,6 +65,9 @@ To use a specific binary:
 $env:JARVIS_JCODE = "C:\Users\atulp\AppData\Local\jcode\bin\jcode.exe"
 ```
 
+On Windows, the console also falls back to the standard installed locations
+under `%LOCALAPPDATA%\jcode\` when `jcode` is not on `PATH`.
+
 ## Safety Model
 
 The user asked for multiple agents in the same directory. This prototype keeps
