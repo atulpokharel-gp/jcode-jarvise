@@ -51,8 +51,40 @@ Spoken text that is not a command is appended to the mission box.
 
 ## Worker Provider
 
-By default the console runs `jcode run` using the active Jcode config. To pin a
-provider or model, set `JARVIS_JCODE_ARGS` before starting the console:
+Open **Settings** in the console to configure OpenAI, Claude, and NVIDIA. API
+keys are saved only in the ignored local runtime file:
+
+```text
+.jcode/jarvis-console/settings.json
+```
+
+Each provider has an editable model list using this format:
+
+```text
+model-id|tier|cost
+```
+
+`tier` is `economy`, `balanced`, or `premium`; lower `cost` wins when multiple
+models satisfy the same worker need.
+
+The smart router has three strategies:
+
+- `Cost saver` uses economy models unless the role needs coordination or git.
+- `Balanced` uses stronger models for orchestration/git and cheaper models for
+  UI/polish workers.
+- `Quality first` prefers premium models for coordination, git, and
+  verification.
+
+Plan cards also support per-agent provider/model overrides. Leave those fields
+blank to let Jarvis choose automatically.
+
+By default the console runs `jcode run` through these provider routes:
+
+- OpenAI: `--provider openai-api --model <model>`
+- Claude: `--provider claude-api --model <model>`
+- NVIDIA: `--provider-profile nvidia-rotation --model <model>`
+
+To pin extra arguments globally, set `JARVIS_JCODE_ARGS` before starting the console:
 
 ```powershell
 $env:JARVIS_JCODE_ARGS = "--provider-profile nvidia-rotation --model moonshotai/kimi-k2.6"

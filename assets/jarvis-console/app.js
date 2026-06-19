@@ -2,6 +2,7 @@ const taskInput = document.querySelector("#task");
 const planButton = document.querySelector("#planButton");
 const startButton = document.querySelector("#startButton");
 const mergeButton = document.querySelector("#mergeButton");
+const settingsButton = document.querySelector("#settingsButton");
 const refreshButton = document.querySelector("#refreshButton");
 const voiceButton = document.querySelector("#voiceButton");
 const voiceRing = document.querySelector("#voiceRing");
@@ -21,10 +22,17 @@ const metricConflict = document.querySelector("#metricConflict");
 const selectedAgent = document.querySelector("#selectedAgent");
 const agentDetails = document.querySelector("#agentDetails");
 const agentLog = document.querySelector("#agentLog");
+const settingsModal = document.querySelector("#settingsModal");
+const closeSettings = document.querySelector("#closeSettings");
+const providerSettings = document.querySelector("#providerSettings");
+const strategySelect = document.querySelector("#strategySelect");
+const saveSettings = document.querySelector("#saveSettings");
+const reloadSettings = document.querySelector("#reloadSettings");
 
 let currentPlan = [];
 let latestAgents = [];
 let selectedAgentId = "";
+let currentSettings;
 let recognition;
 
 async function api(path, options = {}) {
@@ -58,6 +66,8 @@ function gatherPlanFromDom() {
     .map((row) => ({
       role: row.querySelector("[data-role]")?.value.trim() || "Worker Agent",
       task: row.querySelector("[data-task]")?.value.trim() || "",
+      provider: row.querySelector("[data-provider]")?.value.trim() || "",
+      model: row.querySelector("[data-model]")?.value.trim() || "",
     }))
     .filter((item) => item.task.length > 0);
   currentPlan = plan;
@@ -72,13 +82,17 @@ function renderMetrics(state) {
   metricConflict.textContent = summary.conflict || 0;
   const dirty = Boolean(state.root_dirty);
   const missingJcode = state.jcode_available === false;
+  const providers = state.settings?.providers || {};
+  const availableProviders = Object.values(providers).filter((provider) => provider.enabled && provider.has_api_key);
   if (missingJcode) {
     launchGate.textContent = state.jcode_path || "Jcode executable not found";
+  } else if (!availableProviders.length) {
+    launchGate.textContent = "Add an API key in Settings before launch";
   } else {
     launchGate.textContent = dirty ? "Commit or stash before launch" : `Ready: ${state.jcode_path}`;
   }
-  launchGate.className = `gate ${dirty || missingJcode ? "blocked" : "ready"}`;
-  startButton.disabled = dirty || missingJcode;
+  launchGate.className = `gate ${dirty || missingJcode || !availableProviders.length ? "blocked" : "ready"}`;
+  startButton.disabled = dirty || missingJcode || !availableProviders.length;
 }
 
 function renderPlan(plan) {
@@ -95,6 +109,10 @@ function renderPlan(plan) {
       <label>Worker ${index + 1}</label>
       <input data-role value="${escapeHtml(item.role)}" />
       <textarea data-task rows="3">${escapeHtml(item.task)}</textarea>
+      <div class="route-row">
+        <input data-provider value="${escapeHtml(item.provider || "")}" placeholder="provider override: openai, claude, nvidia" />
+        <input data-model value="${escapeHtml(item.model || "")}" placeholder="model override, blank = smart" />
+      </div>
     `;
     planEl.appendChild(node);
   });
@@ -121,6 +139,7 @@ function renderAgents(agents) {
       <p>${escapeHtml(agent.role)}</p>
       <small>${escapeHtml(agent.task)}</small>
       <small>branch: ${escapeHtml(agent.branch || "pending")}</small>
+      <small class="model-route">model: ${escapeHtml(agent.provider || "pending")}/${escapeHtml(agent.model || "pending")}</small>
       <small>commit: ${escapeHtml(agent.commit || "not committed yet")}</small>
       <small>pid: ${escapeHtml(agent.pid || "-")}</small>
       <button data-inspect="${escapeHtml(agent.id)}">Inspect</button>
@@ -154,6 +173,7 @@ function renderSelectedAgent() {
     <strong>${escapeHtml(agent.role)}</strong>
     <span class="${statusClass(agent.status)}">${escapeHtml(agent.status)}</span>
     <small>${escapeHtml(agent.task)}</small>
+    <small class="model-route">provider/model: ${escapeHtml(agent.provider || "-")}/${escapeHtml(agent.model || "-")}</small>
     <small>branch: ${escapeHtml(agent.branch)}</small>
     <small>worktree: ${escapeHtml(agent.worktree)}</small>
     <small>log: ${escapeHtml(agent.log)}</small>
@@ -198,6 +218,75 @@ async function refresh() {
   renderAgents(state.agents || []);
   renderEvents(state.events || []);
   await refreshAgentLog();
+}
+
+function modelsToText(models) {
+  return (models || []).map((model) => `${model.id}|${model.tier}|${model.cost}`).join("\n");
+}
+
+function textToModels(value) {
+  return value
+    .split("\n")
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [id, tier = "balanced", cost = "3"] = line.split("|").map((part) => part.trim());
+      return { id, tier, cost: Number(cost) || 3 };
+    })
+    .filter((model) => model.id);
+}
+
+function renderSettings(settings) {
+  currentSettings = settings;
+  strategySelect.value = settings.strategy || "balanced";
+  providerSettings.innerHTML = "";
+  Object.entries(settings.providers || {}).forEach(([providerId, provider]) => {
+    const card = document.createElement("article");
+    card.className = "provider-card";
+    card.dataset.provider = providerId;
+    card.innerHTML = `
+      <div class="check-row">
+        <input id="provider-${providerId}" type="checkbox" data-enabled ${provider.enabled ? "checked" : ""} />
+        <label for="provider-${providerId}">${escapeHtml(provider.label || providerId)}</label>
+      </div>
+      <small class="${provider.has_api_key ? "status-complete" : "status-failed"}">
+        ${provider.has_api_key ? "API key saved/found" : "No API key found"}
+      </small>
+      <label>API key</label>
+      <input data-api-key type="password" placeholder="Leave blank to keep existing key" autocomplete="off" />
+      <label>Models: id|tier|cost</label>
+      <textarea data-models>${escapeHtml(modelsToText(provider.models))}</textarea>
+      <small class="subtle">tier is economy, balanced, or premium. Lower cost wins inside a tier.</small>
+    `;
+    providerSettings.appendChild(card);
+  });
+}
+
+async function openSettings() {
+  const settings = await api("/api/settings");
+  renderSettings(settings);
+  settingsModal.hidden = false;
+}
+
+function collectSettings() {
+  const providers = {};
+  providerSettings.querySelectorAll(".provider-card").forEach((card) => {
+    providers[card.dataset.provider] = {
+      enabled: card.querySelector("[data-enabled]").checked,
+      api_key: card.querySelector("[data-api-key]").value.trim(),
+      models: textToModels(card.querySelector("[data-models]").value),
+    };
+  });
+  return { strategy: strategySelect.value, providers };
+}
+
+async function persistSettings() {
+  const saved = await api("/api/settings", {
+    method: "POST",
+    body: JSON.stringify(collectSettings()),
+  });
+  renderSettings(saved);
+  await refresh();
 }
 
 async function planAgents() {
@@ -290,6 +379,17 @@ planButton.addEventListener("click", () => planAgents().catch((error) => alert(e
 startButton.addEventListener("click", () => startWorkers().catch((error) => alert(error.message)));
 mergeButton.addEventListener("click", () => mergeFinished().catch((error) => alert(error.message)));
 refreshButton.addEventListener("click", () => refresh().catch((error) => alert(error.message)));
+settingsButton.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
+closeSettings.addEventListener("click", () => {
+  settingsModal.hidden = true;
+});
+reloadSettings.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
+saveSettings.addEventListener("click", () => persistSettings().catch((error) => alert(error.message)));
+settingsModal.addEventListener("click", (event) => {
+  if (event.target === settingsModal) {
+    settingsModal.hidden = true;
+  }
+});
 voiceButton.addEventListener("click", () => {
   if (!recognition) return;
   if (voiceRing.classList.contains("listening")) {

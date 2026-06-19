@@ -31,7 +31,9 @@ body {
 }
 
 button,
-textarea {
+textarea,
+input,
+select {
   font: inherit;
 }
 
@@ -162,6 +164,19 @@ textarea {
   outline: none;
 }
 
+input,
+select {
+  border: 1px solid #284059;
+  border-radius: 8px;
+  background: #07111d;
+  color: var(--text);
+  min-height: 38px;
+  padding: 9px 11px;
+  outline: none;
+}
+
+input:focus,
+select:focus,
 textarea:focus {
   border-color: var(--cyan);
   box-shadow: 0 0 0 3px rgba(65, 215, 255, 0.12);
@@ -308,6 +323,12 @@ pre {
   gap: 8px;
 }
 
+.route-row {
+  display: grid;
+  grid-template-columns: 170px 1fr;
+  gap: 8px;
+}
+
 .plan-item input,
 .plan-item textarea {
   min-height: 38px;
@@ -394,6 +415,77 @@ pre {
   margin: 0;
 }
 
+.modal {
+  position: fixed;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(3, 7, 12, 0.74);
+  backdrop-filter: blur(10px);
+}
+
+.modal[hidden] {
+  display: none;
+}
+
+.modal-panel {
+  width: min(980px, 100%);
+  max-height: min(860px, calc(100vh - 44px));
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #0a111b;
+  box-shadow: 0 30px 90px rgba(0, 0, 0, 0.45);
+  padding: 18px;
+}
+
+.modal-head {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+
+.provider-settings {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 14px;
+  margin-top: 16px;
+}
+
+.provider-card {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(16, 24, 36, 0.76);
+  padding: 14px;
+}
+
+.provider-card textarea {
+  min-height: 150px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.check-row input {
+  min-height: auto;
+}
+
+.model-route {
+  color: var(--cyan);
+}
+
 .event {
   color: var(--muted);
 }
@@ -405,7 +497,8 @@ pre {
   .metric-grid,
   .agents,
   .inspector-body,
-  .planner-controls {
+  .planner-controls,
+  .provider-settings {
     grid-template-columns: 1fr;
   }
 

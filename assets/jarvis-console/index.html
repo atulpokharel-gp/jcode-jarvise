@@ -34,6 +34,7 @@
             <button id="planButton">Plan Agents</button>
             <button id="startButton" class="primary">Start Workers</button>
             <button id="mergeButton" class="danger">Merge Finished</button>
+            <button id="settingsButton">Settings</button>
             <button id="refreshButton">Refresh</button>
           </div>
           <div class="planner-controls">
@@ -115,6 +116,37 @@
         <div id="events" class="events"></div>
       </section>
     </main>
+
+    <div id="settingsModal" class="modal" hidden>
+      <div class="modal-panel">
+        <header class="modal-head">
+          <div>
+            <p class="eyebrow">Model Router</p>
+            <h2>Agent Settings</h2>
+          </div>
+          <button id="closeSettings">Close</button>
+        </header>
+
+        <label for="strategySelect">Smart routing strategy</label>
+        <select id="strategySelect">
+          <option value="cost_saver">Cost saver</option>
+          <option value="balanced">Balanced</option>
+          <option value="quality">Quality first</option>
+        </select>
+        <p class="subtle">
+          Jarvis assigns economy models to simple UI/polish work, stronger models to
+          orchestration/git/verification, and picks the lowest cost available model
+          that satisfies the selected strategy.
+        </p>
+
+        <div id="providerSettings" class="provider-settings"></div>
+
+        <div class="controls">
+          <button id="saveSettings" class="primary">Save Settings</button>
+          <button id="reloadSettings">Reload</button>
+        </div>
+      </div>
+    </div>
     <script src="/app.js"></script>
   </body>
 </html>
