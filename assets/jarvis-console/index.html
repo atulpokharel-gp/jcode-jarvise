@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jcode Jarvis Console</title>
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="hero">
+        <div>
+          <p class="eyebrow">Jcode Swarm Control</p>
+          <h1>Jarvis Master Console</h1>
+          <p class="subtle">
+            Plan a task, deploy worker Jcode agents, track their branches, and
+            merge finished work under master review.
+          </p>
+        </div>
+        <div class="orb" aria-hidden="true">
+          <span></span>
+        </div>
+      </section>
+
+      <section class="command-deck">
+        <div class="task-box">
+          <label for="task">Mission</label>
+          <textarea
+            id="task"
+            rows="6"
+            placeholder="Build the feature, fix the bug, or split a larger coding task into worker scopes..."
+          ></textarea>
+          <div class="controls">
+            <button id="planButton">Plan Agents</button>
+            <button id="startButton" class="primary">Start Workers</button>
+            <button id="mergeButton" class="danger">Merge Finished</button>
+            <button id="refreshButton">Refresh</button>
+          </div>
+        </div>
+
+        <aside class="voice-panel">
+          <div class="voice-ring" id="voiceRing">
+            <div></div>
+            <span>Voice</span>
+          </div>
+          <button id="voiceButton">Start Voice</button>
+          <p id="voiceStatus" class="subtle">Speech commands use the browser microphone.</p>
+          <div class="quick-grid">
+            <button data-template="Plan this task and deploy the right number of agents: ">Plan</button>
+            <button data-template="Deploy three agents to work on: ">3 Agents</button>
+            <button data-template="Review and merge completed agent branches for: ">Merge</button>
+          </div>
+        </aside>
+      </section>
+
+      <section class="status-grid">
+        <article>
+          <h2>Git State</h2>
+          <pre id="gitStatus">Loading...</pre>
+        </article>
+        <article>
+          <h2>Master Plan</h2>
+          <div id="plan" class="plan-list"></div>
+        </article>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Workers</h2>
+          <span id="agentCount" class="badge">0 active</span>
+        </div>
+        <div id="agents" class="agents"></div>
+      </section>
+
+      <section>
+        <div class="section-head">
+          <h2>Event Stream</h2>
+          <span class="badge">local only</span>
+        </div>
+        <div id="events" class="events"></div>
+      </section>
+    </main>
+    <script src="/app.js"></script>
+  </body>
+</html>
