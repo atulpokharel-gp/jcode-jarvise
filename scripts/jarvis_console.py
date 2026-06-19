@@ -20,6 +20,7 @@ from datetime import datetime
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+from urllib.parse import parse_qs, urlparse
 
 
 ROOT = Path.cwd()
@@ -83,6 +84,30 @@ def git_status() -> str:
     return text or "Clean"
 
 
+def state_summary(state: dict[str, Any]) -> dict[str, int]:
+    summary = {
+        "planned": 0,
+        "starting": 0,
+        "running": 0,
+        "complete": 0,
+        "failed": 0,
+        "conflict": 0,
+        "stopped": 0,
+    }
+    for agent in state.get("agents", []):
+        status = str(agent.get("status") or "planned")
+        summary[status] = summary.get(status, 0) + 1
+    return summary
+
+
+def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
+    state["git_status"] = git_status()
+    state["root_dirty"] = dirty(ROOT)
+    state["current_branch"] = current_branch()
+    state["summary"] = state_summary(state)
+    return state
+
+
 def current_branch() -> str:
     result = run(["git", "branch", "--show-current"], check=False)
     branch = result.stdout.strip()
@@ -96,6 +121,21 @@ def last_commit(cwd: Path) -> str:
 
 def dirty(cwd: Path) -> bool:
     return bool(run(["git", "status", "--porcelain"], cwd=cwd, check=False).stdout.strip())
+
+
+def clean_plan(plan: Any, max_agents: int = 5) -> list[dict[str, str]]:
+    if not isinstance(plan, list):
+        return []
+    cleaned: list[dict[str, str]] = []
+    for index, item in enumerate(plan[:max_agents], start=1):
+        if not isinstance(item, dict):
+            continue
+        role = str(item.get("role") or f"Worker Agent {index}").strip()
+        task = str(item.get("task") or "").strip()
+        if not task:
+            continue
+        cleaned.append({"role": role[:120], "task": task[:4000]})
+    return cleaned
 
 
 def commit_if_needed(agent: dict[str, Any]) -> None:
@@ -135,13 +175,13 @@ def poll_processes(state: dict[str, Any]) -> None:
         save_state(state)
 
 
-def choose_plan(task: str) -> list[dict[str, str]]:
+def choose_plan(task: str, max_agents: int = 5) -> list[dict[str, str]]:
     lowered = task.lower()
     broad_markers = ["frontend", "backend", "api", "tests", "docs", "git", "merge", "ui"]
     score = sum(1 for marker in broad_markers if marker in lowered)
     if len(task) > 600:
         score += 2
-    count = max(1, min(5, score or 2))
+    count = max(1, min(max_agents, score or 2))
     roles = [
         ("UI Agent", "Build the user-facing console, controls, and visual states."),
         ("Orchestration Agent", "Implement worker launch, lifecycle tracking, and logs."),
@@ -189,6 +229,9 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
         base_branch = current_branch()
         jcode = os.environ.get("JARVIS_JCODE", shutil.which("jcode") or "jcode")
         extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""))
+        plan = clean_plan(plan)
+        if not plan:
+            raise RuntimeError("Plan is empty.")
         new_agents: list[dict[str, Any]] = []
         for index, item in enumerate(plan, start=1):
             agent_id = f"agent-{stamp}-{index}"
@@ -224,7 +267,54 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
         state["plan"] = plan
         state.setdefault("agents", []).extend(new_agents)
         save_state(state)
-        return state
+        return hydrate_state(state)
+
+
+def agent_by_id(state: dict[str, Any], agent_id: str) -> dict[str, Any] | None:
+    for agent in state.get("agents", []):
+        if agent.get("id") == agent_id:
+            return agent
+    return None
+
+
+def read_agent_log(agent_id: str) -> dict[str, Any]:
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+        agent = agent_by_id(state, agent_id)
+        if not agent:
+            raise RuntimeError(f"Unknown agent: {agent_id}")
+        raw_log_path = str(agent.get("log") or "").strip()
+        if not raw_log_path:
+            return {"id": agent_id, "log": ""}
+        log_path = Path(raw_log_path)
+        if not log_path.exists() or not log_path.is_file():
+            return {"id": agent_id, "log": ""}
+        text = log_path.read_text(encoding="utf-8", errors="replace")
+        return {"id": agent_id, "log": text[-24000:]}
+
+
+def stop_agent(agent_id: str) -> dict[str, Any]:
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+        agent = agent_by_id(state, agent_id)
+        if not agent:
+            raise RuntimeError(f"Unknown agent: {agent_id}")
+        process = PROCESSES.pop(agent_id, None)
+        if process and process.poll() is None:
+            process.terminate()
+        elif agent.get("pid"):
+            pid = str(agent["pid"])
+            if os.name == "nt":
+                run(["taskkill", "/PID", pid, "/T", "/F"], check=False)
+            else:
+                run(["kill", "-TERM", pid], check=False)
+        agent["status"] = "stopped"
+        agent["ended_at"] = datetime.now().isoformat(timespec="seconds")
+        event(state, f"{agent_id} stopped by master.")
+        save_state(state)
+        return hydrate_state(state)
 
 
 def merge_finished() -> dict[str, Any]:
@@ -253,7 +343,7 @@ def merge_finished() -> dict[str, Any]:
         if not merged:
             event(state, "No completed worker branches were ready to merge.")
         save_state(state)
-        return state
+        return hydrate_state(state)
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -272,29 +362,37 @@ class Handler(BaseHTTPRequestHandler):
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
     def do_GET(self) -> None:  # noqa: N802
-        if self.path == "/api/status":
-            with STATE_LOCK:
-                state = load_state()
-                poll_processes(state)
-                state["git_status"] = git_status()
-                self.send_json(state)
+        try:
+            parsed = urlparse(self.path)
+            if parsed.path == "/api/status":
+                with STATE_LOCK:
+                    state = load_state()
+                    poll_processes(state)
+                    self.send_json(hydrate_state(state))
+                return
+            if parsed.path == "/api/agent/log":
+                agent_id = parse_qs(parsed.query).get("id", [""])[0]
+                self.send_json(read_agent_log(agent_id))
+                return
+            route = "index.html" if parsed.path == "/" else parsed.path.lstrip("/")
+            path = (ASSET_DIR / route).resolve()
+            if not str(path).startswith(str(ASSET_DIR.resolve())) or not path.exists():
+                self.send_error(404)
+                return
+            content_type = "text/html"
+            if path.suffix == ".css":
+                content_type = "text/css"
+            elif path.suffix == ".js":
+                content_type = "text/javascript"
+            data = path.read_bytes()
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=400)
             return
-        route = "index.html" if self.path == "/" else self.path.lstrip("/")
-        path = (ASSET_DIR / route).resolve()
-        if not str(path).startswith(str(ASSET_DIR.resolve())) or not path.exists():
-            self.send_error(404)
-            return
-        content_type = "text/html"
-        if path.suffix == ".css":
-            content_type = "text/css"
-        elif path.suffix == ".js":
-            content_type = "text/javascript"
-        data = path.read_bytes()
-        self.send_response(200)
-        self.send_header("Content-Type", content_type)
-        self.send_header("Content-Length", str(len(data)))
-        self.end_headers()
-        self.wfile.write(data)
 
     def do_POST(self) -> None:  # noqa: N802
         try:
@@ -303,24 +401,31 @@ class Handler(BaseHTTPRequestHandler):
                 task = str(body.get("task", "")).strip()
                 if not task:
                     raise RuntimeError("Mission is empty.")
+                max_agents = int(body.get("max_agents") or 5)
+                max_agents = max(1, min(5, max_agents))
                 with STATE_LOCK:
                     state = load_state()
-                    plan = choose_plan(task)
+                    plan = choose_plan(task, max_agents=max_agents)
                     state["plan"] = plan
                     event(state, f"Master planned {len(plan)} worker scope(s).")
                     save_state(state)
-                    state["git_status"] = git_status()
-                    self.send_json(state)
+                    self.send_json(hydrate_state(state))
                 return
             if self.path == "/api/start":
                 task = str(body.get("task", "")).strip()
-                plan = body.get("plan") or choose_plan(task)
+                plan = clean_plan(body.get("plan")) or choose_plan(task)
                 if not task:
                     raise RuntimeError("Mission is empty.")
                 self.send_json(start_workers(task, plan))
                 return
             if self.path == "/api/merge":
                 self.send_json(merge_finished())
+                return
+            if self.path == "/api/agent/stop":
+                agent_id = str(body.get("id") or "").strip()
+                if not agent_id:
+                    raise RuntimeError("Missing agent id.")
+                self.send_json(stop_agent(agent_id))
                 return
             self.send_error(404)
         except Exception as exc:  # Keep UI errors readable.

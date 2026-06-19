@@ -36,6 +36,11 @@
             <button id="mergeButton" class="danger">Merge Finished</button>
             <button id="refreshButton">Refresh</button>
           </div>
+          <div class="planner-controls">
+            <label for="agentLimit">Agent limit <span id="agentLimitValue">3</span></label>
+            <input id="agentLimit" type="range" min="1" max="5" value="3" />
+            <span id="launchGate" class="gate">Checking git state...</span>
+          </div>
         </div>
 
         <aside class="voice-panel">
@@ -51,6 +56,25 @@
             <button data-template="Review and merge completed agent branches for: ">Merge</button>
           </div>
         </aside>
+      </section>
+
+      <section class="metric-grid">
+        <article>
+          <span>Branch</span>
+          <strong id="metricBranch">-</strong>
+        </article>
+        <article>
+          <span>Running</span>
+          <strong id="metricRunning">0</strong>
+        </article>
+        <article>
+          <span>Complete</span>
+          <strong id="metricComplete">0</strong>
+        </article>
+        <article>
+          <span>Conflicts</span>
+          <strong id="metricConflict">0</strong>
+        </article>
       </section>
 
       <section class="status-grid">
@@ -70,6 +94,17 @@
           <span id="agentCount" class="badge">0 active</span>
         </div>
         <div id="agents" class="agents"></div>
+      </section>
+
+      <section class="inspector">
+        <div class="section-head">
+          <h2>Agent Inspector</h2>
+          <span id="selectedAgent" class="badge">none selected</span>
+        </div>
+        <div class="inspector-body">
+          <div id="agentDetails" class="detail-card subtle">Select a worker to inspect its live log.</div>
+          <pre id="agentLog" class="agent-log">No log selected.</pre>
+        </div>
       </section>
 
       <section>

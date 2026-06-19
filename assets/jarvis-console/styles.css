@@ -167,6 +167,32 @@ textarea:focus {
   box-shadow: 0 0 0 3px rgba(65, 215, 255, 0.12);
 }
 
+.planner-controls {
+  display: grid;
+  grid-template-columns: 170px minmax(120px, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  margin-top: 14px;
+}
+
+input[type="range"] {
+  width: 100%;
+  accent-color: var(--cyan);
+}
+
+.gate {
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.gate.ready {
+  color: var(--green);
+}
+
+.gate.blocked {
+  color: var(--red);
+}
+
 .controls,
 .quick-grid {
   display: flex;
@@ -224,6 +250,32 @@ textarea:focus {
   margin-bottom: 18px;
 }
 
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+  margin-bottom: 18px;
+}
+
+.metric-grid article {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(16, 24, 36, 0.76);
+  padding: 14px;
+}
+
+.metric-grid span,
+.agent small {
+  color: var(--muted);
+}
+
+.metric-grid strong {
+  display: block;
+  margin-top: 6px;
+  font-size: 24px;
+  overflow-wrap: anywhere;
+}
+
 pre {
   min-height: 110px;
   overflow: auto;
@@ -243,11 +295,28 @@ pre {
 
 .plan-item,
 .agent,
-.event {
+.event,
+.detail-card {
   border: 1px solid var(--line);
   border-radius: 8px;
   background: rgba(12, 18, 28, 0.92);
   padding: 12px;
+}
+
+.plan-item {
+  display: grid;
+  gap: 8px;
+}
+
+.plan-item input,
+.plan-item textarea {
+  min-height: 38px;
+  resize: vertical;
+  border: 1px solid #284059;
+  border-radius: 8px;
+  background: #07111d;
+  color: var(--text);
+  padding: 10px;
 }
 
 .section-head {
@@ -280,11 +349,6 @@ pre {
   gap: 10px;
 }
 
-.agent small {
-  color: var(--muted);
-  overflow-wrap: anywhere;
-}
-
 .status-running {
   color: var(--cyan);
 }
@@ -308,6 +372,28 @@ pre {
   overflow: auto;
 }
 
+.inspector-body {
+  display: grid;
+  grid-template-columns: 330px 1fr;
+  gap: 14px;
+}
+
+.detail-card {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.detail-card button {
+  justify-self: start;
+}
+
+.agent-log {
+  min-height: 260px;
+  max-height: 420px;
+  margin: 0;
+}
+
 .event {
   color: var(--muted);
 }
@@ -316,7 +402,10 @@ pre {
   .hero,
   .command-deck,
   .status-grid,
-  .agents {
+  .metric-grid,
+  .agents,
+  .inspector-body,
+  .planner-controls {
     grid-template-columns: 1fr;
   }
 

@@ -1,6 +1,6 @@
 # Jarvis Master Console
 
-Status: first local prototype.
+Status: dynamic local console.
 
 The Jarvis console is a browser UI for launching multiple Jcode worker agents
 from one master screen. It keeps workers isolated with git worktrees, tracks
@@ -23,11 +23,17 @@ http://127.0.0.1:8765
 
 - The master types or dictates a mission.
 - The console creates a small plan and decides how many worker scopes to use.
+- The plan cards are editable before launch, so the master can change roles or
+  scope text before workers start.
 - Worker launch requires a clean root worktree so every branch has a clear base.
 - Each worker gets its own branch and worktree under `.jcode/jarvis-console/`.
 - Each worker runs `jcode run` with scoped instructions.
 - When a worker exits, the console commits any remaining dirty changes in that
   worker worktree.
+- The worker dashboard refreshes live and shows running, complete, failed, and
+  conflict counts.
+- Selecting a worker opens an inspector with branch, worktree, log path, stop
+  control, and live log tail.
 - The master can merge completed worker branches from the console.
 - If git reports a conflict, the merge stops and the master resolves it in the
   root worktree.
