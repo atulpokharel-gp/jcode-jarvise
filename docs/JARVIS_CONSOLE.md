@@ -93,11 +93,37 @@ concept to every agent wastes tokens, so Jarvis delegates like a manager:
   instead of being re-sent in full to all N workers (the old prompt embedded the
   whole mission in every worker, and `choose_plan` embedded it again per task).
 
-When a worker fails, the work is handed **back to the same agent** — its own
-branch and worktree — to fix, like a manager returning a bug to the developer
+When a worker fails, the work is handed **back to the same agent** - its own
+branch and worktree - to fix, like a manager returning a bug to the developer
 who wrote it. The repair prompt carries the same compact headline, the original
 objective, and the failure log; it never re-sends the whole concept. See
 [Self-Healing Agent](#self-healing-agent).
+
+## Mission Architect Scope: Build API and UI with tests
+
+### Rules
+
+- Keep the work limited to mission decomposition for the API and UI effort.
+- Treat the API and UI implementations as owned by other agents.
+- Only define the work boundaries, dependencies, and validation expectations.
+- Do not implement product logic, UI wiring, or endpoint behavior here.
+- Prefer clean handoff text that another agent can use directly.
+
+### Acceptance Criteria
+
+- The mission is split into clear worker-ready rules.
+- The scope states what is in bounds and what is out of bounds.
+- The scope includes test and validation expectations for the API and UI work.
+- The scope names the dependencies on other agents without duplicating their work.
+- The scope is concise enough to hand off without additional interpretation.
+
+### Safe Worker Boundaries
+
+- In scope: mission framing, task boundaries, success criteria, and validation gates.
+- In scope: interface expectations that the API and UI workers must respect.
+- Out of scope: backend endpoints, frontend components, styling, state management, and test implementation details.
+- Out of scope: cross-agent integration code unless it is a thin contract or stub.
+- If a dependency is missing, document the contract and stop rather than filling in the other agent's work.
 
 ## Self-Healing Agent
 
