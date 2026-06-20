@@ -46,6 +46,9 @@ const createProjectButton = document.querySelector("#createProjectButton");
 const folderList = document.querySelector("#folderList");
 const armyBoard = document.querySelector("#armyBoard");
 const armySummary = document.querySelector("#armySummary");
+const consoleState = document.querySelector("#consoleState");
+const consoleUpdated = document.querySelector("#consoleUpdated");
+const consoleGate = document.querySelector("#consoleGate");
 
 let currentPlan = [];
 let latestAgents = [];
@@ -55,6 +58,7 @@ let selectedAgentId = "";
 let currentSettings;
 let currentWorkspacePath = "";
 let recognition;
+let isBusy = false;
 let lastVoiceCommand = "";
 const processedVoiceFinals = new Set();
 const recentVoiceChunks = new Map();
@@ -93,6 +97,23 @@ function agentStage(status) {
   if (normalized === "failed") return "failed";
   if (normalized === "stopped") return "stopped";
   return "queued";
+}
+
+function setBusy(nextBusy, message = "") {
+  isBusy = nextBusy;
+  document.body.classList.toggle("busy", nextBusy);
+  if (!consoleState) return;
+  consoleState.textContent = nextBusy ? message || "Working" : "Ready";
+  consoleState.className = nextBusy ? "state-busy" : "state-ready";
+}
+
+function updateLastSeen() {
+  if (!consoleUpdated) return;
+  consoleUpdated.textContent = new Date().toLocaleTimeString([], {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
 }
 
 function appendMissionText(text) {
@@ -158,6 +179,10 @@ function renderMetrics(state) {
     launchGate.textContent = "Add an API key in Settings before launch";
   } else {
     launchGate.textContent = dirty ? "Commit or stash before launch" : `Ready: ${state.jcode_path}`;
+  }
+  if (consoleGate) {
+    consoleGate.textContent = launchGate.textContent;
+    consoleGate.className = dirty || missingJcode || !availableProviders.length ? "state-error" : "state-ready";
   }
   launchGate.className = `gate ${dirty || missingJcode || !availableProviders.length ? "blocked" : "ready"}`;
   startButton.disabled = dirty || missingJcode || !availableProviders.length;
@@ -278,6 +303,7 @@ function renderAgents(agents) {
   latestAgents.forEach((agent) => {
     const node = document.createElement("article");
     node.className = "agent";
+    if (agent.id === selectedAgentId) node.classList.add("selected");
     node.innerHTML = `
       <header>
         <strong>${escapeHtml(agent.id)}</strong>
@@ -296,6 +322,7 @@ function renderAgents(agents) {
   agentsEl.querySelectorAll("[data-inspect]").forEach((button) => {
     button.addEventListener("click", () => {
       selectedAgentId = button.dataset.inspect;
+      renderAgents(latestAgents);
       renderSelectedAgent();
       refreshAgentLog();
     });
@@ -357,74 +384,96 @@ async function refreshAgentLog() {
 }
 
 async function refresh() {
-  const state = await api("/api/status");
-  latestPlanPreview = Boolean(state.plan_preview);
-  gitStatus.textContent = state.git_status || "Clean";
-  renderMetrics(state);
-  if (document.activeElement?.closest?.("#plan") !== planEl) {
-    renderPlan(state.plan);
+  const wasBusy = isBusy;
+  if (!wasBusy) setBusy(true, "Scanning");
+  try {
+    const state = await api("/api/status");
+    latestPlanPreview = Boolean(state.plan_preview);
+    updateLastSeen();
+    gitStatus.textContent = state.git_status || "Clean";
+    renderMetrics(state);
+    if (document.activeElement?.closest?.("#plan") !== planEl) {
+      renderPlan(state.plan);
+    }
+    renderAgents(state.agents || []);
+    renderEvents(state.events || []);
+    await refreshAgentLog();
+  } finally {
+    if (!wasBusy) setBusy(false);
   }
-  renderAgents(state.agents || []);
-  renderEvents(state.events || []);
-  await refreshAgentLog();
 }
 
 async function browseWorkspace(path = workspacePath.value || currentWorkspacePath) {
-  const response = await api(`/api/workspace/list?path=${encodeURIComponent(path || "")}`);
-  workspacePath.value = response.path;
-  newProjectParent.value = response.path;
-  folderList.innerHTML = "";
-  if (response.parent) {
-    const parentNode = document.createElement("div");
-    parentNode.className = "folder-item";
-    parentNode.innerHTML = `<small>..</small><button data-browse="${escapeHtml(response.parent)}">Open</button>`;
-    folderList.appendChild(parentNode);
+  setBusy(true, "Browsing");
+  try {
+    const response = await api(`/api/workspace/list?path=${encodeURIComponent(path || "")}`);
+    workspacePath.value = response.path;
+    newProjectParent.value = response.path;
+    folderList.innerHTML = "";
+    if (response.parent) {
+      const parentNode = document.createElement("div");
+      parentNode.className = "folder-item";
+      parentNode.innerHTML = `<small>..</small><button data-browse="${escapeHtml(response.parent)}">Open</button>`;
+      folderList.appendChild(parentNode);
+    }
+    response.entries.forEach((entry) => {
+      const node = document.createElement("div");
+      node.className = "folder-item";
+      const label = entry.is_dir ? `[folder] ${entry.name}` : entry.name;
+      node.innerHTML = `
+        <small>${escapeHtml(label)}${entry.is_git_repo ? " / git" : ""}</small>
+        ${
+          entry.is_dir
+            ? `<span><button data-browse="${escapeHtml(entry.path)}">Open</button> <button data-use="${escapeHtml(entry.path)}">Use</button></span>`
+            : "<span></span>"
+        }
+      `;
+      folderList.appendChild(node);
+    });
+    folderList.querySelectorAll("[data-browse]").forEach((button) => {
+      button.addEventListener("click", () => browseWorkspace(button.dataset.browse).catch((error) => alert(error.message)));
+    });
+    folderList.querySelectorAll("[data-use]").forEach((button) => {
+      button.addEventListener("click", () => setWorkspace(button.dataset.use).catch((error) => alert(error.message)));
+    });
+  } finally {
+    setBusy(false);
   }
-  response.entries.forEach((entry) => {
-    const node = document.createElement("div");
-    node.className = "folder-item";
-    const label = entry.is_dir ? `[folder] ${entry.name}` : entry.name;
-    node.innerHTML = `
-      <small>${escapeHtml(label)}${entry.is_git_repo ? " / git" : ""}</small>
-      ${
-        entry.is_dir
-          ? `<span><button data-browse="${escapeHtml(entry.path)}">Open</button> <button data-use="${escapeHtml(entry.path)}">Use</button></span>`
-          : "<span></span>"
-      }
-    `;
-    folderList.appendChild(node);
-  });
-  folderList.querySelectorAll("[data-browse]").forEach((button) => {
-    button.addEventListener("click", () => browseWorkspace(button.dataset.browse).catch((error) => alert(error.message)));
-  });
-  folderList.querySelectorAll("[data-use]").forEach((button) => {
-    button.addEventListener("click", () => setWorkspace(button.dataset.use).catch((error) => alert(error.message)));
-  });
 }
 
 async function setWorkspace(path = workspacePath.value) {
-  await api("/api/workspace/set", {
-    method: "POST",
-    body: JSON.stringify({ path }),
-  });
-  await refresh();
-  await browseWorkspace(path);
+  setBusy(true, "Setting workspace");
+  try {
+    await api("/api/workspace/set", {
+      method: "POST",
+      body: JSON.stringify({ path }),
+    });
+    await refresh();
+    await browseWorkspace(path);
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function createProject() {
-  const parent = newProjectParent.value.trim() || currentWorkspacePath;
-  const name = newProjectName.value.trim();
-  if (!name) {
-    alert("Project name is required.");
-    return;
+  setBusy(true, "Creating project");
+  try {
+    const parent = newProjectParent.value.trim() || currentWorkspacePath;
+    const name = newProjectName.value.trim();
+    if (!name) {
+      alert("Project name is required.");
+      return;
+    }
+    await api("/api/workspace/create", {
+      method: "POST",
+      body: JSON.stringify({ parent, name, init_git: true }),
+    });
+    newProjectName.value = "";
+    await refresh();
+    await browseWorkspace(`${parent}\\${name}`);
+  } finally {
+    setBusy(false);
   }
-  await api("/api/workspace/create", {
-    method: "POST",
-    body: JSON.stringify({ parent, name, init_git: true }),
-  });
-  newProjectName.value = "";
-  await refresh();
-  await browseWorkspace(`${parent}\\${name}`);
 }
 
 function modelsToText(models) {
@@ -488,64 +537,100 @@ function collectSettings() {
 }
 
 async function persistSettings() {
-  const saved = await api("/api/settings", {
-    method: "POST",
-    body: JSON.stringify(collectSettings()),
-  });
-  renderSettings(saved);
-  await refresh();
+  setBusy(true, "Saving settings");
+  try {
+    const saved = await api("/api/settings", {
+      method: "POST",
+      body: JSON.stringify(collectSettings()),
+    });
+    renderSettings(saved);
+    await refresh();
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function planAgents() {
-  const task = taskInput.value.trim();
-  if (!task) return;
-  const response = await api("/api/plan", {
-    method: "POST",
-    body: JSON.stringify({ task, max_agents: Number(agentLimit.value) }),
-  });
-  latestPlanPreview = Boolean(response.plan_preview);
-  renderPlan(response.plan);
-  renderEvents(response.events || []);
-  renderMetrics(response);
+  setBusy(true, "Planning");
+  try {
+    const task = taskInput.value.trim();
+    if (!task) return;
+    const response = await api("/api/plan", {
+      method: "POST",
+      body: JSON.stringify({ task, max_agents: Number(agentLimit.value) }),
+    });
+    latestPlanPreview = Boolean(response.plan_preview);
+    renderPlan(response.plan);
+    renderEvents(response.events || []);
+    renderMetrics(response);
+    updateLastSeen();
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function startWorkers() {
-  const task = taskInput.value.trim();
-  if (!task) return;
-  const plan = gatherPlanFromDom();
-  if (!plan.length) {
-    await planAgents();
+  setBusy(true, "Starting workers");
+  try {
+    const task = taskInput.value.trim();
+    if (!task) return;
+    const plan = gatherPlanFromDom();
+    if (!plan.length) {
+      await planAgents();
+    }
+    await api("/api/start", {
+      method: "POST",
+      body: JSON.stringify({ task, plan: currentPlan }),
+    });
+    await refresh();
+  } finally {
+    setBusy(false);
   }
-  await api("/api/start", {
-    method: "POST",
-    body: JSON.stringify({ task, plan: currentPlan }),
-  });
-  await refresh();
 }
 
 async function mergeFinished() {
   if (!confirm("Merge completed agent branches into the current branch?")) return;
-  await api("/api/merge", { method: "POST", body: "{}" });
-  await refresh();
+  setBusy(true, "Merging");
+  try {
+    await api("/api/merge", { method: "POST", body: "{}" });
+    await refresh();
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function installService() {
-  await api("/api/service/install", { method: "POST", body: "{}" });
-  await refresh();
+  setBusy(true, "Installing service");
+  try {
+    await api("/api/service/install", { method: "POST", body: "{}" });
+    await refresh();
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function removeService() {
-  await api("/api/service/remove", { method: "POST", body: "{}" });
-  await refresh();
+  setBusy(true, "Removing service");
+  try {
+    await api("/api/service/remove", { method: "POST", body: "{}" });
+    await refresh();
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function stopAgent(id) {
   if (!confirm(`Stop ${id}?`)) return;
-  await api("/api/agent/stop", {
-    method: "POST",
-    body: JSON.stringify({ id }),
-  });
-  await refresh();
+  setBusy(true, "Stopping worker");
+  try {
+    await api("/api/agent/stop", {
+      method: "POST",
+      body: JSON.stringify({ id }),
+    });
+    await refresh();
+  } finally {
+    setBusy(false);
+  }
 }
 
 function setupVoice() {
@@ -659,6 +744,7 @@ document.querySelectorAll("[data-template]").forEach((button) => {
 setupVoice();
 refresh().catch((error) => {
   gitStatus.textContent = error.message;
+  setBusy(false);
 });
 browseWorkspace().catch(() => {});
 setInterval(() => refresh().catch(() => {}), 1500);

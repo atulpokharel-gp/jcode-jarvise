@@ -7,22 +7,52 @@
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
+    <div class="matrix-rain" aria-hidden="true">
+      <span>01001010 JCODE ROOT ACCESS GRANTED</span>
+      <span>TRACE ROUTE / AGENT SWARM / MERGE LOCK</span>
+      <span>10110110 WORKTREE BRANCH COMMIT STATUS</span>
+      <span>MODEL ROUTER NVIDIA OPENAI CLAUDE ONLINE</span>
+      <span>SECURITY SCAN DATABASE UX BACKEND QA</span>
+    </div>
+
     <main class="shell">
-      <section class="hero">
+      <section class="hero breach-hero">
         <div>
-          <p class="eyebrow">Jarvis Control Plane</p>
-          <h1>Direct the Jcode swarm</h1>
+          <p class="eyebrow">Jarvis Breach Console</p>
+          <h1>Hack the build pipeline</h1>
           <p class="subtle">
-            Turn a mission into scoped workers, watch their branches move, and
-            bring finished work back under master review.
+            Deploy a master Jcode controller, split the mission into specialist
+            agents, watch branches mutate in parallel, then merge the result
+            under command-room review.
           </p>
           <div class="controls">
             <button id="refreshButton">Refresh Console</button>
             <button id="settingsButton">Settings</button>
           </div>
         </div>
-        <div class="orb" aria-hidden="true">
-          <span></span>
+        <aside class="holo-card" aria-label="System breach animation">
+          <div class="orb" aria-hidden="true"><span></span></div>
+          <div class="terminal-lines" aria-hidden="true">
+            <span>&gt; uplink.agent_matrix()</span>
+            <span>&gt; spawn --parallel --isolated</span>
+            <span>&gt; git.merge.guard = armed</span>
+            <span>&gt; voice.command.stream = hot</span>
+          </div>
+        </aside>
+      </section>
+
+      <section class="status-strip" aria-label="Console status">
+        <div>
+          <span class="status-label">Console</span>
+          <strong id="consoleState">Ready</strong>
+        </div>
+        <div>
+          <span class="status-label">Last Pulse</span>
+          <strong id="consoleUpdated">-</strong>
+        </div>
+        <div>
+          <span class="status-label">Launch Gate</span>
+          <strong id="consoleGate">Checking...</strong>
         </div>
       </section>
 
@@ -51,13 +81,19 @@
 
       <section class="command-deck">
         <div class="task-box">
-          <p class="eyebrow">Mission Builder</p>
-          <label for="task">Mission</label>
+          <p class="eyebrow">Mission Injection</p>
+          <label for="task">Payload</label>
           <textarea
             id="task"
             rows="6"
             placeholder="Build the feature, fix the bug, or split a larger coding task into worker scopes..."
           ></textarea>
+          <div class="attack-path" aria-hidden="true">
+            <span>Plan</span>
+            <span>Spawn</span>
+            <span>Commit</span>
+            <span>Merge</span>
+          </div>
           <div class="controls">
             <button id="planButton">Plan Agents</button>
             <button id="startButton" class="primary">Start Workers</button>
@@ -93,8 +129,8 @@
             <span id="backendStatus" class="badge">checking</span>
           </div>
           <p class="subtle">
-            Confirm the local Jcode backend, active workspace, and git readiness before
-            launching workers.
+            Confirm the Jcode binary, active workspace, and git readiness before
+            launching the swarm.
           </p>
           <div class="backend-lines">
             <small>Jcode: <span id="backendJcode">-</span></small>
@@ -118,8 +154,8 @@
             <span class="badge">git ready</span>
           </div>
           <p class="subtle">
-            Open an existing folder, switch the active path, or create a fresh project
-            for the swarm to work inside.
+            Open an existing folder, switch the active path, or create a fresh
+            project for the agent company.
           </p>
           <div class="create-row">
             <input id="newProjectParent" placeholder="Parent folder" />
@@ -160,7 +196,7 @@
 
       <section>
         <div class="section-head">
-          <h2>Workers</h2>
+          <h2>Worker Terminals</h2>
           <span id="agentCount" class="badge">0 active</span>
         </div>
         <div id="agents" class="agents"></div>
@@ -179,7 +215,7 @@
 
       <section>
         <div class="section-head">
-          <h2>Dashboard Event Stream</h2>
+          <h2>System Event Stream</h2>
           <span class="badge">local only</span>
         </div>
         <div id="events" class="events"></div>

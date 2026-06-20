@@ -127,12 +127,38 @@ button.danger {
 }
 
 .hero,
+.status-strip,
 .command-deck,
 .status-grid,
 .agents,
 .events {
   display: grid;
   gap: 16px;
+}
+
+.status-strip {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  margin-bottom: 18px;
+}
+
+.status-strip > div {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(12, 18, 28, 0.92);
+  padding: 12px 14px;
+}
+
+.status-label {
+  display: block;
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+}
+
+.status-strip strong {
+  overflow-wrap: anywhere;
 }
 
 .hero {
@@ -357,6 +383,18 @@ input[type="range"] {
 .gate.blocked {
   color: var(--red);
   text-shadow: 0 0 16px rgba(255, 95, 121, 0.34);
+}
+
+.state-ready {
+  color: var(--green);
+}
+
+.state-busy {
+  color: var(--amber);
+}
+
+.state-error {
+  color: var(--red);
 }
 
 .controls,
@@ -693,6 +731,11 @@ pre {
   gap: 8px;
 }
 
+.agent.selected {
+  border-color: rgba(65, 215, 255, 0.75);
+  box-shadow: 0 0 0 1px rgba(65, 215, 255, 0.18), 0 0 28px rgba(65, 215, 255, 0.08);
+}
+
 .agent header {
   display: flex;
   justify-content: space-between;
@@ -838,6 +881,17 @@ pre {
   }
 }
 
+.busy button,
+.busy input,
+.busy textarea,
+.busy select {
+  cursor: progress;
+}
+
+.busy .status-strip {
+  opacity: 0.95;
+}
+
 @media (max-width: 860px) {
   .shell {
     width: min(100% - 24px, 720px);
@@ -845,6 +899,7 @@ pre {
   }
 
   .hero,
+  .status-strip,
   .command-deck,
   .status-grid,
   .workspace-grid,
@@ -894,5 +949,387 @@ pre {
   .route-row,
   .folder-item {
     grid-template-columns: 1fr;
+  }
+}
+
+/* Breach-console skin */
+:root {
+  --bg: #010407;
+  --bg-2: #03110f;
+  --panel: rgba(2, 17, 17, 0.9);
+  --panel-2: rgba(1, 8, 11, 0.96);
+  --panel-3: rgba(5, 28, 25, 0.86);
+  --line: rgba(0, 255, 166, 0.24);
+  --line-strong: rgba(78, 255, 214, 0.56);
+  --text: #eafff7;
+  --muted: #7bb9aa;
+  --green: #35ff8f;
+  --red: #ff3d66;
+  --amber: #ffe66d;
+  --violet: #b86cff;
+  --glow: rgba(53, 255, 143, 0.2);
+}
+
+body {
+  background:
+    linear-gradient(rgba(53, 255, 143, 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(78, 231, 255, 0.035) 1px, transparent 1px),
+    radial-gradient(circle at 14% 10%, rgba(53, 255, 143, 0.2), transparent 29rem),
+    radial-gradient(circle at 84% 2%, rgba(78, 231, 255, 0.2), transparent 31rem),
+    radial-gradient(circle at 74% 80%, rgba(184, 108, 255, 0.11), transparent 28rem),
+    linear-gradient(180deg, var(--bg) 0%, var(--bg-2) 54%, #03060a 100%);
+  background-size: 44px 44px, 44px 44px, auto, auto, auto, auto;
+}
+
+body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, transparent, rgba(53, 255, 143, 0.12), transparent),
+    linear-gradient(180deg, transparent 0 42%, rgba(78, 231, 255, 0.07) 48%, transparent 55%);
+  mix-blend-mode: screen;
+  opacity: 0.42;
+  animation: breachSweep 5.5s infinite linear;
+}
+
+.matrix-rain {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  overflow: hidden;
+  color: rgba(53, 255, 143, 0.16);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+  letter-spacing: 0.18em;
+  text-shadow: 0 0 12px rgba(53, 255, 143, 0.38);
+  text-transform: uppercase;
+}
+
+.matrix-rain span {
+  position: absolute;
+  top: -12vh;
+  writing-mode: vertical-rl;
+  white-space: nowrap;
+  animation: matrixFall 12s infinite linear;
+}
+
+.matrix-rain span:nth-child(1) {
+  left: 8%;
+  animation-duration: 13s;
+}
+
+.matrix-rain span:nth-child(2) {
+  left: 28%;
+  animation-delay: -5s;
+  animation-duration: 16s;
+}
+
+.matrix-rain span:nth-child(3) {
+  left: 49%;
+  animation-delay: -2s;
+  animation-duration: 11s;
+}
+
+.matrix-rain span:nth-child(4) {
+  left: 68%;
+  animation-delay: -8s;
+  animation-duration: 15s;
+}
+
+.matrix-rain span:nth-child(5) {
+  left: 88%;
+  animation-delay: -4s;
+  animation-duration: 12s;
+}
+
+.shell {
+  width: min(1320px, calc(100% - 32px));
+}
+
+.hero {
+  position: relative;
+  grid-template-columns: minmax(0, 1fr) 330px;
+  min-height: 310px;
+  border: 1px solid rgba(53, 255, 143, 0.22);
+  border-radius: 8px;
+  padding: 22px;
+  overflow: hidden;
+  background:
+    linear-gradient(120deg, rgba(53, 255, 143, 0.13), transparent 42%),
+    linear-gradient(180deg, rgba(4, 22, 19, 0.86), rgba(1, 7, 10, 0.94));
+  box-shadow: 0 28px 80px rgba(0, 0, 0, 0.48), inset 0 0 70px rgba(53, 255, 143, 0.045);
+}
+
+.breach-hero::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background:
+    linear-gradient(90deg, transparent 0 18%, rgba(53, 255, 143, 0.08) 20%, transparent 24%),
+    repeating-linear-gradient(90deg, transparent 0 46px, rgba(53, 255, 143, 0.04) 47px, transparent 49px);
+  animation: systemTrace 7s infinite linear;
+}
+
+.breach-hero > * {
+  position: relative;
+  z-index: 1;
+}
+
+.eyebrow,
+.node-type,
+.metric-grid span {
+  color: var(--green);
+  text-shadow: 0 0 18px rgba(53, 255, 143, 0.55);
+}
+
+h1 {
+  text-shadow:
+    0 0 20px rgba(53, 255, 143, 0.26),
+    2px 0 0 rgba(78, 231, 255, 0.2),
+    -2px 0 0 rgba(255, 61, 102, 0.15);
+  animation: titleGlitch 4.7s infinite steps(1);
+}
+
+.holo-card {
+  display: grid;
+  gap: 16px;
+  justify-items: center;
+  padding: 14px;
+  border: 1px solid rgba(53, 255, 143, 0.24);
+  border-radius: 8px;
+  background:
+    linear-gradient(180deg, rgba(53, 255, 143, 0.08), transparent),
+    rgba(1, 8, 11, 0.72);
+  box-shadow: inset 0 0 30px rgba(53, 255, 143, 0.08), 0 0 38px rgba(53, 255, 143, 0.08);
+}
+
+.holo-card .orb {
+  width: min(220px, 100%);
+  animation: rotateCore 16s infinite linear;
+}
+
+.terminal-lines {
+  width: 100%;
+  display: grid;
+  gap: 7px;
+  color: rgba(220, 255, 239, 0.82);
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.terminal-lines span {
+  overflow: hidden;
+  border-right: 1px solid rgba(53, 255, 143, 0.75);
+  white-space: nowrap;
+  animation: terminalBlink 1s infinite steps(1);
+}
+
+.task-box,
+.voice-panel,
+.status-grid article,
+.metric-grid article,
+.workspace-grid article,
+.army-panel,
+.army-node,
+.plan-item,
+.agent,
+.event,
+.detail-card,
+.provider-card,
+.modal-panel {
+  background:
+    linear-gradient(135deg, rgba(53, 255, 143, 0.09), transparent 24%),
+    linear-gradient(180deg, var(--panel), var(--panel-2));
+}
+
+button:hover {
+  border-color: var(--green);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.08), 0 0 24px rgba(53, 255, 143, 0.2);
+}
+
+button.primary {
+  background:
+    linear-gradient(135deg, rgba(53, 255, 143, 0.96), rgba(78, 231, 255, 0.88)),
+    var(--green);
+}
+
+textarea,
+input,
+select {
+  border-color: rgba(53, 255, 143, 0.24);
+  background: rgba(0, 10, 9, 0.92);
+}
+
+input:focus,
+select:focus,
+textarea:focus {
+  border-color: var(--green);
+  box-shadow: 0 0 0 3px rgba(53, 255, 143, 0.13), inset 0 0 28px rgba(53, 255, 143, 0.06);
+}
+
+.attack-path {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 12px;
+}
+
+.attack-path span {
+  position: relative;
+  min-height: 36px;
+  display: grid;
+  place-items: center;
+  border: 1px solid rgba(53, 255, 143, 0.24);
+  border-radius: 6px;
+  background: rgba(53, 255, 143, 0.055);
+  color: var(--green);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  overflow: hidden;
+  text-transform: uppercase;
+}
+
+.attack-path span::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(90deg, transparent, rgba(53, 255, 143, 0.3), transparent);
+  transform: translateX(-120%);
+  animation: nodeSweep 2.8s infinite linear;
+}
+
+.attack-path span:nth-child(2)::after {
+  animation-delay: 0.35s;
+}
+
+.attack-path span:nth-child(3)::after {
+  animation-delay: 0.7s;
+}
+
+.attack-path span:nth-child(4)::after {
+  animation-delay: 1.05s;
+}
+
+.voice-ring {
+  border-color: rgba(53, 255, 143, 0.48);
+  box-shadow: inset 0 0 34px rgba(53, 255, 143, 0.12), 0 0 28px rgba(53, 255, 143, 0.1);
+}
+
+.voice-ring.listening {
+  animation: pulse 1.2s infinite ease-in-out, rotateCore 9s infinite linear;
+}
+
+.army-running,
+.army-starting {
+  border-color: rgba(53, 255, 143, 0.58);
+  box-shadow:
+    0 0 26px rgba(53, 255, 143, 0.16),
+    inset 0 0 24px rgba(53, 255, 143, 0.08);
+  animation: activeNode 1.8s infinite ease-in-out;
+}
+
+.agent.selected {
+  border-color: rgba(53, 255, 143, 0.78);
+  box-shadow: 0 0 0 1px rgba(53, 255, 143, 0.2), 0 0 28px rgba(53, 255, 143, 0.12);
+}
+
+.event {
+  background:
+    linear-gradient(90deg, rgba(53, 255, 143, 0.1), transparent 38%),
+    rgba(5, 12, 21, 0.86);
+  animation: eventFlicker 4s infinite steps(1);
+}
+
+@keyframes matrixFall {
+  to {
+    transform: translateY(125vh);
+  }
+}
+
+@keyframes breachSweep {
+  from {
+    transform: translateX(-80%) translateY(-12%);
+  }
+  to {
+    transform: translateX(80%) translateY(12%);
+  }
+}
+
+@keyframes systemTrace {
+  to {
+    transform: translateX(88px);
+  }
+}
+
+@keyframes titleGlitch {
+  0%,
+  91%,
+  100% {
+    transform: translate(0);
+    filter: none;
+  }
+  92% {
+    transform: translate(2px, -1px);
+    filter: hue-rotate(35deg);
+  }
+  93% {
+    transform: translate(-2px, 1px);
+  }
+  94% {
+    transform: translate(0);
+  }
+}
+
+@keyframes rotateCore {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@keyframes terminalBlink {
+  50% {
+    border-color: transparent;
+  }
+}
+
+@keyframes nodeSweep {
+  to {
+    transform: translateX(120%);
+  }
+}
+
+@keyframes activeNode {
+  50% {
+    transform: translateY(-2px);
+  }
+}
+
+@keyframes eventFlicker {
+  0%,
+  92%,
+  100% {
+    opacity: 1;
+  }
+  93% {
+    opacity: 0.74;
+  }
+  94% {
+    opacity: 1;
+  }
+}
+
+@media (max-width: 860px) {
+  .hero {
+    grid-template-columns: 1fr;
+  }
+
+  .attack-path {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
