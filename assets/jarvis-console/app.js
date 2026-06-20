@@ -100,7 +100,22 @@ async function api(path, options = {}) {
     headers: { "Content-Type": "application/json" },
     ...options,
   });
-  const body = await response.json();
+  const text = await response.text();
+  let body;
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    // The server returned HTML/text instead of JSON. This almost always means
+    // the running console process is an older build that does not know this
+    // route yet (Python does not hot-reload), so it answered with a 404 page.
+    if (response.status === 404 || /^\s*</.test(text)) {
+      throw new Error(
+        `${path} is not available on the running server (status ${response.status}). ` +
+          `Restart the console: stop it, then run \`python scripts/jarvis_console.py\` again.`,
+      );
+    }
+    throw new Error(`${path} returned a non-JSON response (status ${response.status}).`);
+  }
   if (!response.ok) {
     throw new Error(body.error || `Request failed: ${response.status}`);
   }
