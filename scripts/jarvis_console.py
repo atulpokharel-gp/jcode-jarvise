@@ -857,7 +857,9 @@ def dispatch_healer(state: dict[str, Any], target: dict[str, Any], attempt: int)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
     healer_id = f"healer-{target['id']}-{attempt}"
     healer_log = LOG_DIR / f"{healer_id}.log"
-    prompt = healer_prompt(target, log_tail(target.get("log")), attempt)
+    whiteboard = state.get("whiteboard") or {}
+    headline = mission_headline(str(whiteboard.get("mission") or target.get("task") or ""))
+    prompt = healer_prompt(target, headline, log_tail(target.get("log")), attempt)
     log_file = healer_log.open("w", encoding="utf-8")
     child_env = os.environ.copy()
     child_env.update(model_env)
@@ -1055,10 +1057,14 @@ def choose_plan(task: str, max_agents: int = 12) -> list[dict[str, str]]:
         ("Docs Navigator Agent", "Document what was built, how to navigate it, and remaining risks."),
         ("Polish Agent", "Tighten microcopy, accessibility, spacing, and operator ergonomics."),
     ]
+    # The task is the worker's compact, scoped objective only. The full mission
+    # is held by the master; each worker receives just a short headline plus this
+    # objective at launch (see worker_prompt) so we do not pay to send the whole
+    # project concept to every slave agent.
     return [
         {
             "role": roles[i][0],
-            "task": f"{roles[i][1]} Scope it against this mission: {task}",
+            "task": roles[i][1],
         }
         for i in range(count)
     ]
@@ -1171,53 +1177,80 @@ def select_healer_model(settings: dict[str, Any]) -> dict[str, Any] | None:
     return None
 
 
-def healer_prompt(target: dict[str, Any], log_tail: str, attempt: int) -> str:
-    return f"""You are the Jarvis Self-Healing Agent.
+def mission_headline(task: str, limit: int = 320) -> str:
+    """Compact the full mission into the short headline a slave actually needs.
 
-A worker agent failed and you have been dispatched over the apcall protocol to
-repair its branch so the original scope works. You are operating inside the
-exact same git worktree and branch as the failed worker.
+    The master keeps the whole concept; workers only receive this headline plus
+    their own scoped objective, which is the token-saving core of the design.
+    """
+    text = " ".join(str(task or "").split())
+    if len(text) <= limit:
+        return text
+    cut = text[:limit]
+    boundary = max(cut.rfind(". "), cut.rfind("! "), cut.rfind("? "))
+    if boundary >= limit * 0.5:
+        return cut[: boundary + 1]
+    return cut.rsplit(" ", 1)[0] + " ..."
 
-Failed worker role:
-{target.get('role')}
 
-Original scoped task:
+def team_boundaries(agent: dict[str, Any], team_roles: list[str]) -> str:
+    others = [role for role in team_roles if role != agent.get("role")]
+    if not others:
+        return "- (you are the only agent on this run)"
+    return "\n".join(f"- {role}" for role in others)
+
+
+def worker_prompt(agent: dict[str, Any], headline: str, team_roles: list[str]) -> str:
+    return f"""You are {agent['role']}, a worker on a team run by the Jarvis master.
+
+The master holds the full project context. You are given only the compact work
+order you need for your task -- work to it precisely and do not try to rebuild
+the whole project or another agent's scope.
+
+Project (headline only):
+{headline}
+
+Your assignment:
+{agent['task']}
+
+Other agents own these scopes -- stay out of them and assume a clean interface
+where you need their work:
+{team_boundaries(agent, team_roles)}
+
+Rules:
+- Work only in your current git worktree and branch.
+- Keep changes tight to your assignment; do not expand scope.
+- If you are blocked on something another agent owns, note it and stub a clean
+  interface rather than building it yourself.
+- Commit your completed changes before finishing.
+- End with a concise report: files changed, validation run, risks, and blockers.
+"""
+
+
+def healer_prompt(target: dict[str, Any], headline: str, log_tail: str, attempt: int) -> str:
+    return f"""You are {target.get('role')}. The master is sending your own task
+back to you because it failed -- fix it like a developer correcting their own
+work. You are inside your original git worktree and branch.
+
+Project (headline only):
+{headline}
+
+Your assignment (the one that failed):
 {target.get('task')}
 
 This is repair attempt {attempt} of {HEAL_MAX_ATTEMPTS}.
 
-Tail of the failed worker's log:
+What went wrong (tail of your log):
 ---
 {log_tail or '(no log captured)'}
 ---
 
 Rules:
 - Diagnose the root cause from the log and the working tree, then fix it.
-- Stay inside this worktree and branch only; do not touch other branches.
-- Make the original scope actually work: build, run, and verify what you can.
+- Stay inside this worktree and branch only; do not touch other agents' work.
+- Make your assignment actually work: build, run, and verify what you can.
 - Commit your repair before finishing.
 - End with a concise report: root cause, the fix, and how you verified it.
-"""
-
-
-def worker_prompt(agent: dict[str, Any], mission: str) -> str:
-    return f"""You are a Jcode worker agent controlled by the Jarvis master.
-
-Mission:
-{mission}
-
-Your scoped role:
-{agent['role']}
-
-Your scoped task:
-{agent['task']}
-
-Rules:
-- Work only in your current git worktree and branch.
-- Keep changes focused on your assigned scope.
-- Commit your completed changes before finishing when possible.
-- Do not merge other worker branches.
-- End with a concise report: files changed, validation run, risks, and blockers.
 """
 
 
@@ -1240,6 +1273,10 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
         plan = clean_plan(plan)
         if not plan:
             raise RuntimeError("Plan is empty.")
+        # The master compacts the mission into one shared headline; each worker
+        # gets the headline + its own objective instead of the full concept.
+        headline = mission_headline(task)
+        team_roles = [item["role"] for item in plan]
         new_agents: list[dict[str, Any]] = []
         for index, item in enumerate(plan, start=1):
             agent_id = f"agent-{stamp}-{index}"
@@ -1262,7 +1299,7 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
             model_args, model_env, provider_label, model_label = launch_args_for(selection)
             agent["provider"] = provider_label
             agent["model"] = model_label
-            prompt = worker_prompt(agent, task)
+            prompt = worker_prompt(agent, headline, team_roles)
             log_file = log_path.open("w", encoding="utf-8")
             child_env = os.environ.copy()
             child_env.update(model_env)

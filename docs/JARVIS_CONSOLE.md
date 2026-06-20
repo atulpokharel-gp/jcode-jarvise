@@ -79,6 +79,26 @@ back to the board so another agent (the self-healing agent) can pick it up and
 finish the work. Branches are combined back into the base branch at merge time,
 and the board status moves `planning -> executing -> complete`.
 
+## Token-Saving Work Orders
+
+The master holds the full mission; the workers do not. Sending the whole project
+concept to every agent wastes tokens, so Jarvis delegates like a manager:
+
+- `choose_plan` gives each task only a compact, scoped objective — never the
+  full mission text.
+- At launch the master compacts the mission into a single short **headline**
+  (~320 chars). Each worker prompt contains only that headline, the worker's own
+  objective, and the list of the other agents' scopes to stay out of.
+- The cost of the mission text is therefore paid roughly once as a headline,
+  instead of being re-sent in full to all N workers (the old prompt embedded the
+  whole mission in every worker, and `choose_plan` embedded it again per task).
+
+When a worker fails, the work is handed **back to the same agent** — its own
+branch and worktree — to fix, like a manager returning a bug to the developer
+who wrote it. The repair prompt carries the same compact headline, the original
+objective, and the failure log; it never re-sends the whole concept. See
+[Self-Healing Agent](#self-healing-agent).
+
 ## Self-Healing Agent
 
 One agent keeps watch over the whole swarm. When a worker exits with a failure,
