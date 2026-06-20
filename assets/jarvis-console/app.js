@@ -5,8 +5,10 @@ const mergeButton = document.querySelector("#mergeButton");
 const settingsButton = document.querySelector("#settingsButton");
 const refreshButton = document.querySelector("#refreshButton");
 const voiceButton = document.querySelector("#voiceButton");
+const talkBackButton = document.querySelector("#talkBackButton");
 const voiceRing = document.querySelector("#voiceRing");
 const voiceStatus = document.querySelector("#voiceStatus");
+const voiceReplyStatus = document.querySelector("#voiceReplyStatus");
 const gitStatus = document.querySelector("#gitStatus");
 const planEl = document.querySelector("#plan");
 const agentsEl = document.querySelector("#agents");
@@ -60,8 +62,13 @@ let currentWorkspacePath = "";
 let recognition;
 let isBusy = false;
 let lastVoiceCommand = "";
+let talkBackEnabled = localStorage.getItem("jarvisTalkBack") === "true";
+let agentAnnouncementPrimed = false;
+let summaryAnnouncementPrimed = false;
+let previousRunningCount = 0;
 const processedVoiceFinals = new Set();
 const recentVoiceChunks = new Map();
+const agentStatusMemory = new Map();
 const voiceChunkDedupeMs = 30000;
 
 async function api(path, options = {}) {
@@ -114,6 +121,53 @@ function updateLastSeen() {
     minute: "2-digit",
     second: "2-digit",
   });
+}
+
+function canTalkBack() {
+  return "speechSynthesis" in window && "SpeechSynthesisUtterance" in window;
+}
+
+function updateTalkBackUi() {
+  if (!talkBackButton || !voiceReplyStatus) return;
+  if (!canTalkBack()) {
+    talkBackButton.disabled = true;
+    talkBackButton.textContent = "Talk Back Unavailable";
+    voiceReplyStatus.textContent = "This browser does not support spoken replies.";
+    return;
+  }
+  talkBackButton.textContent = talkBackEnabled ? "Talk Back On" : "Talk Back Off";
+  talkBackButton.classList.toggle("primary", talkBackEnabled);
+  voiceReplyStatus.textContent = talkBackEnabled
+    ? "Voice replies are live. Jarvis will announce progress and completions."
+    : "Voice replies are muted.";
+}
+
+function speak(text, priority = false) {
+  if (!talkBackEnabled || !canTalkBack()) return;
+  const message = String(text || "").replace(/\s+/g, " ").trim();
+  if (!message) return;
+  if (priority) {
+    window.speechSynthesis.cancel();
+  }
+  const utterance = new SpeechSynthesisUtterance(message);
+  utterance.rate = 1;
+  utterance.pitch = 0.92;
+  utterance.volume = 0.95;
+  window.speechSynthesis.speak(utterance);
+  if (voiceReplyStatus) {
+    voiceReplyStatus.textContent = `Jarvis said: ${message}`;
+  }
+}
+
+function setTalkBack(enabled) {
+  talkBackEnabled = enabled;
+  localStorage.setItem("jarvisTalkBack", enabled ? "true" : "false");
+  updateTalkBackUi();
+  if (enabled) {
+    speak("Voice replies online. I will report mission progress and agent completion.", true);
+  } else if (canTalkBack()) {
+    window.speechSynthesis.cancel();
+  }
 }
 
 function appendMissionText(text) {
@@ -198,6 +252,25 @@ function renderMetrics(state) {
   if (document.activeElement !== newProjectParent) {
     newProjectParent.value = workspace.path || "";
   }
+  announceSummaryChange(summary);
+}
+
+function announceSummaryChange(summary) {
+  const running = Number(summary.running || 0) + Number(summary.starting || 0);
+  const complete = Number(summary.complete || 0);
+  const failed = Number(summary.failed || 0);
+  const conflict = Number(summary.conflict || 0);
+  if (summaryAnnouncementPrimed && previousRunningCount > 0 && running === 0) {
+    if (conflict > 0) {
+      speak("All active workers stopped. A merge conflict needs master review.", true);
+    } else if (failed > 0) {
+      speak(`All active workers stopped. ${complete} completed and ${failed} failed.`, true);
+    } else {
+      speak(`All active workers completed. ${complete} agents finished successfully.`, true);
+    }
+  }
+  previousRunningCount = running;
+  summaryAnnouncementPrimed = true;
 }
 
 function renderService(service) {
@@ -291,6 +364,7 @@ function renderPlan(plan) {
 
 function renderAgents(agents) {
   latestAgents = agents || [];
+  announceAgentStatusChanges(latestAgents);
   agentsEl.innerHTML = "";
   const active = latestAgents.filter((agent) => ["starting", "running"].includes(agent.status)).length;
   agentCount.textContent = `${active} active`;
@@ -332,6 +406,37 @@ function renderAgents(agents) {
   }
   renderSelectedAgent();
   renderArmy();
+}
+
+function announceAgentStatusChanges(agents) {
+  const currentIds = new Set();
+  agents.forEach((agent) => {
+    const id = agent.id;
+    const status = String(agent.status || "planned").toLowerCase();
+    currentIds.add(id);
+    const previous = agentStatusMemory.get(id);
+    const role = agent.role || id;
+    if (agentAnnouncementPrimed && !previous && ["starting", "running"].includes(status)) {
+      speak(`${role} is now running.`);
+    } else if (agentAnnouncementPrimed && previous && previous !== status) {
+      if (status === "complete") {
+        speak(`${role} completed. Changes are committed on ${agent.branch || "its branch"}.`, true);
+      } else if (status === "failed") {
+        speak(`${role} failed. Check the worker terminal for the error log.`, true);
+      } else if (status === "conflict") {
+        speak(`${role} hit a merge conflict. Master intervention is required.`, true);
+      } else if (status === "stopped") {
+        speak(`${role} was stopped.`);
+      } else if (status === "running") {
+        speak(`${role} is running.`);
+      }
+    }
+    agentStatusMemory.set(id, status);
+  });
+  [...agentStatusMemory.keys()].forEach((id) => {
+    if (!currentIds.has(id)) agentStatusMemory.delete(id);
+  });
+  agentAnnouncementPrimed = true;
 }
 
 function renderSelectedAgent() {
@@ -405,6 +510,7 @@ async function refresh() {
 
 async function browseWorkspace(path = workspacePath.value || currentWorkspacePath) {
   setBusy(true, "Browsing");
+  speak("Browsing workspace folders.");
   try {
     const response = await api(`/api/workspace/list?path=${encodeURIComponent(path || "")}`);
     workspacePath.value = response.path;
@@ -443,6 +549,7 @@ async function browseWorkspace(path = workspacePath.value || currentWorkspacePat
 
 async function setWorkspace(path = workspacePath.value) {
   setBusy(true, "Setting workspace");
+  speak("Switching active workspace.");
   try {
     await api("/api/workspace/set", {
       method: "POST",
@@ -457,6 +564,7 @@ async function setWorkspace(path = workspacePath.value) {
 
 async function createProject() {
   setBusy(true, "Creating project");
+  speak("Creating a new git ready project.");
   try {
     const parent = newProjectParent.value.trim() || currentWorkspacePath;
     const name = newProjectName.value.trim();
@@ -471,6 +579,7 @@ async function createProject() {
     newProjectName.value = "";
     await refresh();
     await browseWorkspace(`${parent}\\${name}`);
+    speak(`Project ${name} is ready.`, true);
   } finally {
     setBusy(false);
   }
@@ -538,6 +647,7 @@ function collectSettings() {
 
 async function persistSettings() {
   setBusy(true, "Saving settings");
+  speak("Saving model router settings.");
   try {
     const saved = await api("/api/settings", {
       method: "POST",
@@ -545,6 +655,7 @@ async function persistSettings() {
     });
     renderSettings(saved);
     await refresh();
+    speak("Settings saved.");
   } finally {
     setBusy(false);
   }
@@ -564,6 +675,7 @@ async function planAgents() {
     renderEvents(response.events || []);
     renderMetrics(response);
     updateLastSeen();
+    speak(`Plan ready. ${response.plan?.length || 0} agents prepared for deployment.`, true);
   } finally {
     setBusy(false);
   }
@@ -578,6 +690,7 @@ async function startWorkers() {
     if (!plan.length) {
       await planAgents();
     }
+    speak(`Launching ${currentPlan.length || plan.length} worker agents.`, true);
     await api("/api/start", {
       method: "POST",
       body: JSON.stringify({ task, plan: currentPlan }),
@@ -591,9 +704,11 @@ async function startWorkers() {
 async function mergeFinished() {
   if (!confirm("Merge completed agent branches into the current branch?")) return;
   setBusy(true, "Merging");
+  speak("Starting master merge review.", true);
   try {
     await api("/api/merge", { method: "POST", body: "{}" });
     await refresh();
+    speak("Master merge completed.", true);
   } finally {
     setBusy(false);
   }
@@ -601,9 +716,11 @@ async function mergeFinished() {
 
 async function installService() {
   setBusy(true, "Installing service");
+  speak("Creating auto run service.");
   try {
     await api("/api/service/install", { method: "POST", body: "{}" });
     await refresh();
+    speak("Auto run service is installed.");
   } finally {
     setBusy(false);
   }
@@ -611,9 +728,11 @@ async function installService() {
 
 async function removeService() {
   setBusy(true, "Removing service");
+  speak("Removing auto run service.");
   try {
     await api("/api/service/remove", { method: "POST", body: "{}" });
     await refresh();
+    speak("Auto run service removed.");
   } finally {
     setBusy(false);
   }
@@ -622,6 +741,7 @@ async function removeService() {
 async function stopAgent(id) {
   if (!confirm(`Stop ${id}?`)) return;
   setBusy(true, "Stopping worker");
+  speak(`Stopping ${id}.`, true);
   try {
     await api("/api/agent/stop", {
       method: "POST",
@@ -683,21 +803,35 @@ function setupVoice() {
       if (commandKey === lastVoiceCommand) return;
       if (lower.includes("start workers") || lower.includes("deploy agents")) {
         lastVoiceCommand = commandKey;
+        speak("Deploy command received. Starting workers.", true);
         startWorkers().catch((error) => alert(error.message));
         return;
       }
       if (lower.includes("plan agents")) {
         lastVoiceCommand = commandKey;
+        speak("Plan command received. Building the agent plan.", true);
         planAgents().catch((error) => alert(error.message));
         return;
       }
       if (lower.includes("merge finished")) {
         lastVoiceCommand = commandKey;
+        speak("Merge command received. Preparing master merge.", true);
         mergeFinished().catch((error) => alert(error.message));
+        return;
+      }
+      if (lower.includes("talk back on") || lower.includes("enable voice replies")) {
+        lastVoiceCommand = commandKey;
+        setTalkBack(true);
+        return;
+      }
+      if (lower.includes("talk back off") || lower.includes("mute voice replies")) {
+        lastVoiceCommand = commandKey;
+        setTalkBack(false);
         return;
       }
       appendMissionText(text);
       voiceStatus.textContent = `Added: ${text}`;
+      speak("Mission text added.");
     });
   };
 }
@@ -714,6 +848,7 @@ setWorkspaceButton.addEventListener("click", () => setWorkspace().catch((error) 
 createProjectButton.addEventListener("click", () => createProject().catch((error) => alert(error.message)));
 installServiceButton.addEventListener("click", () => installService().catch((error) => alert(error.message)));
 removeServiceButton.addEventListener("click", () => removeService().catch((error) => alert(error.message)));
+talkBackButton.addEventListener("click", () => setTalkBack(!talkBackEnabled));
 settingsButton.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
 closeSettings.addEventListener("click", () => {
   settingsModal.hidden = true;
@@ -742,6 +877,7 @@ document.querySelectorAll("[data-template]").forEach((button) => {
 });
 
 setupVoice();
+updateTalkBackUi();
 refresh().catch((error) => {
   gitStatus.textContent = error.message;
   setBusy(false);
