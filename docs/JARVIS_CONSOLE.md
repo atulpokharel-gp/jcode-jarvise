@@ -58,6 +58,9 @@ mission (`plan.broadcast`), each agent contributes on the whiteboard
 `apcall://heal` bus (`heal.dispatch`, `heal.result`, `heal.giveup`). The feed is
 capped at the most recent 200 messages.
 
+The network design for turning this local message bus into a remote-capable
+agent protocol lives in [APCALL_NETWORK_PROTOCOL.md](APCALL_NETWORK_PROTOCOL.md).
+
 ## Agent Whiteboard
 
 Clicking **Plan Agents** pops up a shared whiteboard. The master's single
