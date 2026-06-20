@@ -40,6 +40,7 @@ DEFAULT_PORT = 8765
 APCALL_CAP = 200
 HEAL_MAX_ATTEMPTS = 2
 QA_MAX_ATTEMPTS = 2
+MAX_CONCURRENT_AGENTS = 16  # global ceiling; prevents cascade runaway (workers + healers + QA)
 # apcall is the Jarvis inter-agent protocol. Every agent lifecycle transition,
 # planning broadcast, and self-heal handshake is published as an apcall message
 # so the console can show agents coordinating with each other in real time.
@@ -871,6 +872,16 @@ def dispatch_healer(state: dict[str, Any], target: dict[str, Any], attempt: int)
     settings = load_settings(include_secrets=True)
     selection = select_healer_model(settings)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
+    if live_process_count() >= MAX_CONCURRENT_AGENTS:
+        apcall(
+            state,
+            APCALL_HEAL_BUS,
+            target["id"],
+            "heal.queued",
+            {"reason": f"global cap {MAX_CONCURRENT_AGENTS} reached"},
+            f"Healer for {target['id']} queued — at concurrent-agent ceiling ({MAX_CONCURRENT_AGENTS}).",
+        )
+        return
     healer_id = f"healer-{target['id']}-{attempt}"
     healer_log = LOG_DIR / f"{healer_id}.log"
     whiteboard = state.get("whiteboard") or {}
@@ -1042,6 +1053,16 @@ def dispatch_qa(state: dict[str, Any], target: dict[str, Any], attempt: int) -> 
     settings = load_settings(include_secrets=True)
     selection = select_healer_model(settings)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
+    if live_process_count() >= MAX_CONCURRENT_AGENTS:
+        apcall(
+            state,
+            APCALL_QA_BUS,
+            target["id"],
+            "qa.queued",
+            {"reason": f"global cap {MAX_CONCURRENT_AGENTS} reached"},
+            f"QA for {target['id']} queued — at concurrent-agent ceiling ({MAX_CONCURRENT_AGENTS}).",
+        )
+        return False
     qa_id = f"qa-{target['id']}-{attempt}"
     qa_log = LOG_DIR / f"{qa_id}.log"
     whiteboard = state.get("whiteboard") or {}
@@ -1152,6 +1173,11 @@ def handle_qa_exit(state: dict[str, Any], qa_agent: dict[str, Any], code: int) -
         # Could not reassign (auto-repair off or exhausted); leave it flagged.
         target["status"] = "complete"
         target["needs_qa"] = False
+
+
+def live_process_count() -> int:
+    """Count jcode processes currently running (not yet exited)."""
+    return sum(1 for p in PROCESSES.values() if p.poll() is None)
 
 
 def poll_processes(state: dict[str, Any]) -> None:
@@ -1454,6 +1480,11 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
             raise RuntimeError("Selected workspace is not a git repo. Create a project or run git init.")
         if dirty(workspace):
             raise RuntimeError("Workspace is dirty. Commit or stash before launching workers.")
+        if live_process_count() >= MAX_CONCURRENT_AGENTS:
+            raise RuntimeError(
+                f"Cannot launch: {live_process_count()} agents already running "
+                f"(ceiling is {MAX_CONCURRENT_AGENTS}). Stop some agents first."
+            )
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         base_branch = current_branch(workspace)
         jcode = resolve_jcode_binary()

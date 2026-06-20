@@ -13,7 +13,9 @@
 
 <br>
 
-<img src="assets/jarvis-console/preview.png" alt="jcode-jarvise multi-agent control room" width="880">
+<img src="assets/jarvis-console/demo/jarvis-demo.gif" alt="jcode-jarvise live demo — real agents running" width="880">
+
+<sub><a href="assets/jarvis-console/demo/">More screenshots & full video →</a></sub>
 
 </div>
 
@@ -176,7 +178,7 @@ See the [upstream project](https://github.com/1jehuang/jcode) for the engine's b
 - WebSocket (`WSS`) apcall stream + `node.join`/`ack` handshake and capability auth (HTTP transport + session log already shipped)
 - Integration QA on the **merged** result (today QA is per‑branch)
 - Master‑generated, per‑agent interface contracts for even tighter token use
-- A short screen‑recording of a full mission run
+- ~~A short screen‑recording of a full mission run~~ — shipped ([demo/](assets/jarvis-console/demo/))
 
 ---
 
