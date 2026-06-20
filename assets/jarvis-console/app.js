@@ -1,9 +1,6 @@
 const taskInput = document.querySelector("#task");
-const planButton = document.querySelector("#planButton");
-const startButton = document.querySelector("#startButton");
-const mergeButton = document.querySelector("#mergeButton");
+const launchButton = document.querySelector("#launchButton");
 const settingsButton = document.querySelector("#settingsButton");
-const refreshButton = document.querySelector("#refreshButton");
 const voiceButton = document.querySelector("#voiceButton");
 const talkBackButton = document.querySelector("#talkBackButton");
 const voiceRing = document.querySelector("#voiceRing");
@@ -22,9 +19,6 @@ const metricWorkspace = document.querySelector("#metricWorkspace");
 const metricRunning = document.querySelector("#metricRunning");
 const metricComplete = document.querySelector("#metricComplete");
 const metricConflict = document.querySelector("#metricConflict");
-const selectedAgent = document.querySelector("#selectedAgent");
-const agentDetails = document.querySelector("#agentDetails");
-const agentLog = document.querySelector("#agentLog");
 const settingsModal = document.querySelector("#settingsModal");
 const closeSettings = document.querySelector("#closeSettings");
 const providerSettings = document.querySelector("#providerSettings");
@@ -51,12 +45,43 @@ const armySummary = document.querySelector("#armySummary");
 const consoleState = document.querySelector("#consoleState");
 const consoleUpdated = document.querySelector("#consoleUpdated");
 const consoleGate = document.querySelector("#consoleGate");
+const metricHealing = document.querySelector("#metricHealing");
+const apcallFeed = document.querySelector("#apcallFeed");
+const apcallSummary = document.querySelector("#apcallSummary");
+const healingStatus = document.querySelector("#healingStatus");
+const healToggle = document.querySelector("#healToggle");
+const healWatch = document.querySelector("#healWatch");
+const healingBoard = document.querySelector("#healingBoard");
+const whiteboardModal = document.querySelector("#whiteboardModal");
+const closeWhiteboard = document.querySelector("#closeWhiteboard");
+const wbMission = document.querySelector("#wbMission");
+const wbStatus = document.querySelector("#wbStatus");
+const wbTasks = document.querySelector("#wbTasks");
+const wbProgressBar = document.querySelector("#wbProgressBar");
+const wbProgressText = document.querySelector("#wbProgressText");
+const wbNotes = document.querySelector("#wbNotes");
+const wbNoteInput = document.querySelector("#wbNoteInput");
+const wbNoteButton = document.querySelector("#wbNoteButton");
+const wbFeed = document.querySelector("#wbFeed");
+const wbActionButton = document.querySelector("#wbActionButton");
+const liveActivity = document.querySelector("#liveActivity");
+const consoleDeck = document.querySelector("#consoleDeck");
+const consolesButton = document.querySelector("#consolesButton");
 
 let currentPlan = [];
 let latestAgents = [];
 let latestSummary = {};
 let latestPlanPreview = false;
+let latestApcall = [];
+let latestWhiteboard = null;
+let latestHealing = { enabled: true, attempts: {} };
+let healingEnabled = true;
+let launchBlocked = false;
 let selectedAgentId = "";
+const openConsoles = new Set();
+const userClosedConsoles = new Set();
+let consoleZ = 40;
+let consoleOffset = 0;
 let currentSettings;
 let currentWorkspacePath = "";
 let recognition;
@@ -101,6 +126,7 @@ function agentStage(status) {
   if (["running", "starting"].includes(normalized)) return "executing";
   if (normalized === "complete") return "committed";
   if (normalized === "conflict") return "needs master";
+  if (normalized === "healing") return "repairing";
   if (normalized === "failed") return "failed";
   if (normalized === "stopped") return "stopped";
   return "queued";
@@ -239,7 +265,7 @@ function renderMetrics(state) {
     consoleGate.className = dirty || missingJcode || !availableProviders.length ? "state-error" : "state-ready";
   }
   launchGate.className = `gate ${dirty || missingJcode || !availableProviders.length ? "blocked" : "ready"}`;
-  startButton.disabled = dirty || missingJcode || !availableProviders.length;
+  launchBlocked = dirty || missingJcode || !availableProviders.length;
   backendStatus.textContent = state.jcode_available ? "online" : "blocked";
   backendStatus.className = `badge ${state.jcode_available ? "status-complete" : "status-failed"}`;
   backendJcode.textContent = state.jcode_path || "-";
@@ -366,18 +392,17 @@ function renderAgents(agents) {
   latestAgents = agents || [];
   announceAgentStatusChanges(latestAgents);
   agentsEl.innerHTML = "";
-  const active = latestAgents.filter((agent) => ["starting", "running"].includes(agent.status)).length;
+  const active = latestAgents.filter((agent) => ["starting", "running", "healing"].includes(agent.status)).length;
   agentCount.textContent = `${active} active`;
   if (!latestAgents.length) {
     agentsEl.innerHTML = '<div class="agent subtle">No workers launched.</div>';
-    renderSelectedAgent();
     renderArmy();
     return;
   }
   latestAgents.forEach((agent) => {
     const node = document.createElement("article");
-    node.className = "agent";
-    if (agent.id === selectedAgentId) node.classList.add("selected");
+    node.className = `agent ${agent.kind === "healer" ? "agent-healer" : ""}`;
+    if (openConsoles.has(agent.id)) node.classList.add("selected");
     node.innerHTML = `
       <header>
         <strong>${escapeHtml(agent.id)}</strong>
@@ -387,24 +412,14 @@ function renderAgents(agents) {
       <small>${escapeHtml(agent.task)}</small>
       <small>branch: ${escapeHtml(agent.branch || "pending")}</small>
       <small class="model-route">model: ${escapeHtml(agent.provider || "pending")}/${escapeHtml(agent.model || "pending")}</small>
-      <small>commit: ${escapeHtml(agent.commit || "not committed yet")}</small>
       <small>pid: ${escapeHtml(agent.pid || "-")}</small>
-      <button data-inspect="${escapeHtml(agent.id)}">Inspect</button>
+      <button data-inspect="${escapeHtml(agent.id)}">Open Console</button>
     `;
     agentsEl.appendChild(node);
   });
   agentsEl.querySelectorAll("[data-inspect]").forEach((button) => {
-    button.addEventListener("click", () => {
-      selectedAgentId = button.dataset.inspect;
-      renderAgents(latestAgents);
-      renderSelectedAgent();
-      refreshAgentLog();
-    });
+    button.addEventListener("click", () => openConsole(button.dataset.inspect, { focus: true }));
   });
-  if (!latestAgents.some((agent) => agent.id === selectedAgentId)) {
-    selectedAgentId = latestAgents[0]?.id || "";
-  }
-  renderSelectedAgent();
   renderArmy();
 }
 
@@ -439,28 +454,200 @@ function announceAgentStatusChanges(agents) {
   agentAnnouncementPrimed = true;
 }
 
-function renderSelectedAgent() {
-  const agent = latestAgents.find((item) => item.id === selectedAgentId);
-  if (!agent) {
-    selectedAgent.textContent = "none selected";
-    agentDetails.textContent = "Select a worker to inspect its live log.";
-    agentLog.textContent = "No log selected.";
+/* ---- floating per-agent live consoles -------------------- */
+function consoleIdFor(agentId) {
+  return `console-${agentId.replace(/[^a-zA-Z0-9_-]/g, "")}`;
+}
+
+function showConsoleDeck() {
+  if (consoleDeck) consoleDeck.hidden = false;
+}
+
+function openConsole(agentId, options = {}) {
+  if (!agentId) return;
+  userClosedConsoles.delete(agentId);
+  openConsoles.add(agentId);
+  showConsoleDeck();
+  renderConsoleDeck(latestAgents);
+  if (options.focus) focusConsole(agentId);
+  pollConsoleLogs();
+}
+
+function closeConsole(agentId) {
+  openConsoles.delete(agentId);
+  userClosedConsoles.add(agentId);
+  const win = document.getElementById(consoleIdFor(agentId));
+  if (win) win.remove();
+  if (!openConsoles.size && consoleDeck) consoleDeck.hidden = true;
+}
+
+function focusConsole(agentId) {
+  const win = document.getElementById(consoleIdFor(agentId));
+  if (!win) return;
+  consoleZ += 1;
+  win.style.zIndex = String(consoleZ);
+  win.classList.remove("minimized");
+}
+
+function makeConsoleDraggable(win, handle) {
+  let startX = 0;
+  let startY = 0;
+  let baseX = 0;
+  let baseY = 0;
+  let dragging = false;
+  const onMove = (event) => {
+    if (!dragging) return;
+    win.style.left = `${baseX + (event.clientX - startX)}px`;
+    win.style.top = `${baseY + (event.clientY - startY)}px`;
+  };
+  const onUp = () => {
+    dragging = false;
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+  handle.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("button")) return;
+    dragging = true;
+    startX = event.clientX;
+    startY = event.clientY;
+    const rect = win.getBoundingClientRect();
+    baseX = rect.left;
+    baseY = rect.top;
+    consoleZ += 1;
+    win.style.zIndex = String(consoleZ);
+    window.addEventListener("pointermove", onMove);
+    window.addEventListener("pointerup", onUp);
+  });
+}
+
+function renderConsoleDeck(agents) {
+  if (!consoleDeck) return;
+  const roster = agents || [];
+  // Auto-open a console for each freshly active agent the user has not closed.
+  roster.forEach((agent) => {
+    if (
+      ["starting", "running", "healing"].includes(agent.status) &&
+      !openConsoles.has(agent.id) &&
+      !userClosedConsoles.has(agent.id)
+    ) {
+      openConsoles.add(agent.id);
+    }
+  });
+  if (openConsoles.size) showConsoleDeck();
+  else consoleDeck.hidden = true;
+  // Remove windows for agents that vanished.
+  [...consoleDeck.children].forEach((win) => {
+    const id = win.dataset.agent;
+    if (!roster.some((agent) => agent.id === id) || !openConsoles.has(id)) {
+      openConsoles.delete(id);
+      win.remove();
+    }
+  });
+  [...openConsoles].forEach((agentId) => {
+    const agent = roster.find((item) => item.id === agentId);
+    if (!agent) {
+      openConsoles.delete(agentId);
+      return;
+    }
+    let win = document.getElementById(consoleIdFor(agentId));
+    if (!win) {
+      win = document.createElement("article");
+      win.className = "live-console";
+      win.id = consoleIdFor(agentId);
+      win.dataset.agent = agentId;
+      consoleZ += 1;
+      win.style.zIndex = String(consoleZ);
+      win.style.left = `${40 + (consoleOffset % 5) * 38}px`;
+      win.style.top = `${90 + (consoleOffset % 5) * 32}px`;
+      consoleOffset += 1;
+      win.innerHTML = `
+        <header class="lc-head">
+          <span class="lc-dot"></span>
+          <strong class="lc-title"></strong>
+          <span class="lc-status"></span>
+          <span class="lc-actions">
+            <button data-act="min" title="Minimize">_</button>
+            <button data-act="stop" title="Stop">&#9632;</button>
+            <button data-act="close" title="Close">&times;</button>
+          </span>
+        </header>
+        <pre class="lc-log">Connecting to agent stream...</pre>
+      `;
+      consoleDeck.appendChild(win);
+      makeConsoleDraggable(win, win.querySelector(".lc-head"));
+      win.querySelector('[data-act="min"]').addEventListener("click", () => win.classList.toggle("minimized"));
+      win.querySelector('[data-act="close"]').addEventListener("click", () => closeConsole(agentId));
+      win.querySelector('[data-act="stop"]').addEventListener("click", () => {
+        const a = latestAgents.find((item) => item.id === agentId);
+        if (a && a.kind !== "healer" && ["failed", "conflict"].includes(String(a.status))) {
+          healAgent(agentId).catch((error) => alert(error.message));
+        } else {
+          stopAgent(agentId).catch((error) => alert(error.message));
+        }
+      });
+      win.querySelector(".lc-head").addEventListener("pointerdown", () => focusConsole(agentId));
+    }
+    const status = String(agent.status || "").toLowerCase();
+    win.className = `live-console lc-${status}${agent.kind === "healer" ? " lc-healer" : ""}${win.classList.contains("minimized") ? " minimized" : ""}`;
+    win.querySelector(".lc-title").textContent = `${agent.id} · ${agent.role || ""}`;
+    const statusEl = win.querySelector(".lc-status");
+    statusEl.textContent = status;
+    statusEl.className = `lc-status ${statusClass(agent.status)}`;
+    const stopBtn = win.querySelector('[data-act="stop"]');
+    if (agent.kind !== "healer" && ["failed", "conflict"].includes(status)) {
+      stopBtn.innerHTML = "&#10227;";
+      stopBtn.title = "Dispatch healer";
+    } else {
+      stopBtn.innerHTML = "&#9632;";
+      stopBtn.title = "Stop";
+      stopBtn.disabled = !["starting", "running", "healing"].includes(status);
+    }
+  });
+}
+
+async function pollConsoleLogs() {
+  const ids = [...openConsoles].filter((id) => {
+    const win = document.getElementById(consoleIdFor(id));
+    return win && !win.classList.contains("minimized");
+  });
+  await Promise.all(
+    ids.map(async (id) => {
+      try {
+        const response = await api(`/api/agent/log?id=${encodeURIComponent(id)}`);
+        const win = document.getElementById(consoleIdFor(id));
+        if (!win) return;
+        const log = win.querySelector(".lc-log");
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
+        log.textContent = response.log || "Waiting for output...";
+        if (atBottom) log.scrollTop = log.scrollHeight;
+      } catch (error) {
+        const win = document.getElementById(consoleIdFor(id));
+        if (win) win.querySelector(".lc-log").textContent = error.message;
+      }
+    }),
+  );
+}
+
+function renderLiveActivity(state) {
+  if (!liveActivity) return;
+  const summary = state.summary || {};
+  const agents = state.agents || [];
+  const running = agents.filter((agent) => ["starting", "running", "healing"].includes(agent.status));
+  const recent = (state.apcall || []).slice(-4).reverse();
+  if (!agents.length && !recent.length) {
+    liveActivity.innerHTML = '<span class="subtle">Idle. Enter a mission and launch the swarm.</span>';
     return;
   }
-  selectedAgent.textContent = agent.id;
-  const canStop = ["starting", "running"].includes(agent.status);
-  agentDetails.innerHTML = `
-    <strong>${escapeHtml(agent.role)}</strong>
-    <span class="${statusClass(agent.status)}">${escapeHtml(agent.status)}</span>
-    <small>${escapeHtml(agent.task)}</small>
-    <small class="model-route">provider/model: ${escapeHtml(agent.provider || "-")}/${escapeHtml(agent.model || "-")}</small>
-    <small>branch: ${escapeHtml(agent.branch)}</small>
-    <small>worktree: ${escapeHtml(agent.worktree)}</small>
-    <small>log: ${escapeHtml(agent.log)}</small>
-    ${agent.conflicts?.length ? `<small>conflicts: ${escapeHtml(agent.conflicts.join(", "))}</small>` : ""}
-    <button id="stopSelected" ${canStop ? "" : "disabled"}>Stop Worker</button>
-  `;
-  agentDetails.querySelector("#stopSelected")?.addEventListener("click", () => stopAgent(agent.id));
+  const headline = running.length
+    ? `${running.length} agent${running.length === 1 ? "" : "s"} working · ${summary.complete || 0} done`
+    : `${summary.complete || 0} done · ${summary.failed || 0} failed · ${summary.conflict || 0} conflict`;
+  const lines = recent
+    .map(
+      (msg) =>
+        `<span class="la-line"><b>${escapeHtml(msg.from)}</b> &rarr; ${escapeHtml(msg.to)} <i>${escapeHtml(msg.type)}</i></span>`,
+    )
+    .join("");
+  liveActivity.innerHTML = `<span class="la-headline">${escapeHtml(headline)}</span>${lines}`;
 }
 
 function renderEvents(events) {
@@ -475,6 +662,196 @@ function renderEvents(events) {
     node.textContent = `[${event.time}] ${event.message}`;
     eventsEl.appendChild(node);
   });
+}
+
+function apcallTypeClass(type) {
+  const value = String(type || "").toLowerCase();
+  if (value.startsWith("heal") || value === "status.failed") return "ap-heal";
+  if (value.includes("complete") || value.includes("merged") || value.includes("combined")) return "ap-good";
+  if (value.startsWith("plan")) return "ap-plan";
+  if (value.startsWith("task") || value.startsWith("swarm")) return "ap-task";
+  return "ap-default";
+}
+
+function renderApcallInto(container, messages, limit) {
+  if (!container) return;
+  const list = (messages || []).slice(-limit);
+  if (!list.length) {
+    container.innerHTML = '<div class="apcall-msg subtle">No apcall traffic yet.</div>';
+    return;
+  }
+  container.innerHTML = "";
+  list
+    .slice()
+    .reverse()
+    .forEach((msg) => {
+      const node = document.createElement("div");
+      node.className = `apcall-msg ${apcallTypeClass(msg.type)}`;
+      node.innerHTML = `
+        <span class="ap-time">${escapeHtml(msg.time || "")}</span>
+        <span class="ap-route"><b>${escapeHtml(msg.from)}</b> &rarr; ${escapeHtml(msg.to)}</span>
+        <span class="ap-type">${escapeHtml(msg.type)}</span>
+      `;
+      container.appendChild(node);
+    });
+  container.scrollTop = 0;
+}
+
+function renderApcall(messages) {
+  latestApcall = messages || [];
+  renderApcallInto(apcallFeed, latestApcall, 40);
+  renderApcallInto(wbFeed, latestApcall, 20);
+  if (apcallSummary) {
+    const heals = latestApcall.filter((msg) => String(msg.type || "").startsWith("heal")).length;
+    apcallSummary.textContent = latestApcall.length ? `${latestApcall.length} msgs / ${heals} heal` : "idle";
+    apcallSummary.className = `badge ${heals ? "status-conflict" : latestApcall.length ? "status-running" : ""}`;
+  }
+}
+
+function renderHealing(healing, agents) {
+  latestHealing = healing || { enabled: true, attempts: {} };
+  healingEnabled = latestHealing.enabled !== false;
+  const roster = agents || [];
+  const healers = roster.filter((agent) => agent.kind === "healer");
+  const activeHealers = healers.filter((agent) => ["starting", "running"].includes(agent.status)).length;
+  const healed = roster.filter((agent) => agent.healed).length;
+  const watching = roster.filter(
+    (agent) => agent.kind !== "healer" && ["starting", "running", "healing"].includes(agent.status),
+  ).length;
+  if (healToggle) {
+    healToggle.textContent = healingEnabled ? "Auto-Repair: On" : "Auto-Repair: Off";
+    healToggle.classList.toggle("primary", healingEnabled);
+    healToggle.classList.toggle("danger", !healingEnabled);
+  }
+  if (healingStatus) {
+    healingStatus.textContent = activeHealers ? `${activeHealers} repairing` : healingEnabled ? "armed" : "muted";
+    healingStatus.className = `badge ${activeHealers ? "status-running" : healingEnabled ? "status-complete" : "status-failed"}`;
+  }
+  if (healWatch) {
+    healWatch.textContent = `Watching ${watching} agent${watching === 1 ? "" : "s"} · ${healed} healed.`;
+  }
+  if (metricHealing) {
+    metricHealing.textContent = activeHealers || healed || 0;
+  }
+  if (!healingBoard) return;
+  if (!healers.length) {
+    healingBoard.innerHTML = '<div class="heal-card subtle">No repairs dispatched. The healing agent is watching.</div>';
+    return;
+  }
+  healingBoard.innerHTML = "";
+  healers
+    .slice(-6)
+    .reverse()
+    .forEach((healer) => {
+      const node = document.createElement("div");
+      node.className = `heal-card ${statusClass(healer.status)}`;
+      node.innerHTML = `
+        <strong>${escapeHtml(healer.id)}</strong>
+        <small>repairing: ${escapeHtml(healer.heals || "-")}</small>
+        <small>attempt ${escapeHtml(healer.attempt || 1)} · <span class="${statusClass(healer.status)}">${escapeHtml(healer.status)}</span></small>
+        <small>branch: ${escapeHtml(healer.branch || "-")}</small>
+      `;
+      healingBoard.appendChild(node);
+    });
+}
+
+function renderWhiteboard(wb) {
+  latestWhiteboard = wb || null;
+  const hasBoard = Boolean(wb && wb.lanes && wb.lanes.length);
+  if (whiteboardButton) whiteboardButton.disabled = !hasBoard;
+  if (!hasBoard) return;
+  if (wbMission) wbMission.textContent = wb.mission || "-";
+  if (wbStatus) {
+    wbStatus.textContent = wb.status || "planning";
+    wbStatus.className = `badge ${wb.status === "executing" ? "status-running" : wb.status === "merged" ? "status-complete" : ""}`;
+  }
+  if (wbLanes) {
+    wbLanes.innerHTML = "";
+    wb.lanes.forEach((lane) => {
+      const node = document.createElement("article");
+      node.className = "wb-lane";
+      const deps = (lane.depends_on || []).length ? `depends on: ${lane.depends_on.join(", ")}` : "independent lane";
+      node.innerHTML = `
+        <span class="wb-lane-index">Lane ${escapeHtml(lane.index)}</span>
+        <strong>${escapeHtml(lane.role)}</strong>
+        <p>${escapeHtml(lane.focus)}</p>
+        <small>${escapeHtml(deps)}</small>
+        <small class="wb-branch">${escapeHtml(lane.branch || "branch pending")}</small>
+      `;
+      wbLanes.appendChild(node);
+    });
+  }
+  if (wbNotes) {
+    const notes = wb.notes || [];
+    if (!notes.length) {
+      wbNotes.innerHTML = '<div class="wb-note subtle">No notes yet. Add planning context for the swarm.</div>';
+    } else {
+      wbNotes.innerHTML = "";
+      notes
+        .slice()
+        .reverse()
+        .forEach((note) => {
+          const node = document.createElement("div");
+          node.className = "wb-note";
+          node.innerHTML = `<b>${escapeHtml(note.author)}</b> <span>${escapeHtml(note.text)}</span><small>${escapeHtml(note.time)}</small>`;
+          wbNotes.appendChild(node);
+        });
+    }
+  }
+}
+
+function openWhiteboard() {
+  if (!latestWhiteboard || !latestWhiteboard.lanes || !latestWhiteboard.lanes.length) return;
+  renderWhiteboard(latestWhiteboard);
+  whiteboardModal.hidden = false;
+}
+
+function closeWhiteboardModal() {
+  whiteboardModal.hidden = true;
+}
+
+async function toggleHealing() {
+  setBusy(true, "Updating healing");
+  try {
+    const next = !healingEnabled;
+    const state = await api("/api/healing/toggle", {
+      method: "POST",
+      body: JSON.stringify({ enabled: next }),
+    });
+    renderHealing(state.healing, state.agents || latestAgents);
+    renderApcall(state.apcall || latestApcall);
+    speak(next ? "Self healing armed." : "Self healing muted.");
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function healAgent(id) {
+  setBusy(true, "Dispatching healer");
+  speak(`Dispatching self healing agent to ${id}.`, true);
+  try {
+    await api("/api/heal", { method: "POST", body: JSON.stringify({ id }) });
+    await refresh();
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function postWhiteboardNote() {
+  const text = wbNoteInput.value.trim();
+  if (!text) return;
+  const state = await api("/api/whiteboard/note", {
+    method: "POST",
+    body: JSON.stringify({ text, author: "master" }),
+  });
+  wbNoteInput.value = "";
+  renderWhiteboard(state.whiteboard);
+  renderApcall(state.apcall || latestApcall);
+}
+
+async function deployFromWhiteboard() {
+  closeWhiteboardModal();
+  await startWorkers();
 }
 
 async function refreshAgentLog() {
@@ -502,6 +879,9 @@ async function refresh() {
     }
     renderAgents(state.agents || []);
     renderEvents(state.events || []);
+    renderApcall(state.apcall || []);
+    renderHealing(state.healing, state.agents || []);
+    renderWhiteboard(state.whiteboard);
     await refreshAgentLog();
   } finally {
     if (!wasBusy) setBusy(false);
@@ -673,9 +1053,13 @@ async function planAgents() {
     latestPlanPreview = Boolean(response.plan_preview);
     renderPlan(response.plan);
     renderEvents(response.events || []);
+    renderApcall(response.apcall || []);
+    renderHealing(response.healing, response.agents || latestAgents);
+    renderWhiteboard(response.whiteboard);
     renderMetrics(response);
     updateLastSeen();
-    speak(`Plan ready. ${response.plan?.length || 0} agents prepared for deployment.`, true);
+    openWhiteboard();
+    speak(`Plan ready. ${response.plan?.length || 0} agents on the whiteboard, ready to deploy.`, true);
   } finally {
     setBusy(false);
   }
@@ -840,6 +1224,7 @@ agentLimit.addEventListener("input", () => {
   agentLimitValue.textContent = agentLimit.value;
 });
 planButton.addEventListener("click", () => planAgents().catch((error) => alert(error.message)));
+whiteboardButton.addEventListener("click", () => openWhiteboard());
 startButton.addEventListener("click", () => startWorkers().catch((error) => alert(error.message)));
 mergeButton.addEventListener("click", () => mergeFinished().catch((error) => alert(error.message)));
 refreshButton.addEventListener("click", () => refresh().catch((error) => alert(error.message)));
@@ -850,6 +1235,17 @@ installServiceButton.addEventListener("click", () => installService().catch((err
 removeServiceButton.addEventListener("click", () => removeService().catch((error) => alert(error.message)));
 talkBackButton.addEventListener("click", () => setTalkBack(!talkBackEnabled));
 settingsButton.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
+healToggle.addEventListener("click", () => toggleHealing().catch((error) => alert(error.message)));
+closeWhiteboard.addEventListener("click", () => closeWhiteboardModal());
+wbNoteButton.addEventListener("click", () => postWhiteboardNote().catch((error) => alert(error.message)));
+wbNoteInput.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") postWhiteboardNote().catch((error) => alert(error.message));
+});
+wbDeployButton.addEventListener("click", () => deployFromWhiteboard().catch((error) => alert(error.message)));
+wbReplanButton.addEventListener("click", () => planAgents().catch((error) => alert(error.message)));
+whiteboardModal.addEventListener("click", (event) => {
+  if (event.target === whiteboardModal) closeWhiteboardModal();
+});
 closeSettings.addEventListener("click", () => {
   settingsModal.hidden = true;
 });

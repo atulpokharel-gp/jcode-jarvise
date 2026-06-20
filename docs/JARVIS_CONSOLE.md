@@ -47,6 +47,41 @@ http://127.0.0.1:8765
 - If git reports a conflict, the merge stops and the master resolves it in the
   root worktree.
 
+## apcall Protocol
+
+`apcall` (Agent Protocol Call) is the inter-agent message bus. Every lifecycle
+transition is published as a structured message `{from, to, type, payload}` and
+rendered live in the **Inter-Agent Mesh** panel. The master broadcasts the
+mission (`plan.broadcast`), each agent contributes on the whiteboard
+(`plan.contribute`), workers report status (`task.dispatch`, `status.complete`,
+`status.failed`), and the self-healing agent negotiates repairs over the
+`apcall://heal` bus (`heal.dispatch`, `heal.result`, `heal.giveup`). The feed is
+capped at the most recent 200 messages.
+
+## Agent Whiteboard
+
+Clicking **Plan Agents** pops up a shared whiteboard. The master's single
+"thought" (the mission) is rerouted into one lane per agent so the whole swarm
+plans together before any branch is touched. Each lane shows the role, focus,
+its dependencies (workers depend on the Mission Architect; integration/QA/merge
+lanes depend on everyone), and the branch it will claim. Operators can post
+planning notes, then **Deploy From Whiteboard** launches the workers. Lanes are
+combined back into the base branch at merge time, and the board status moves
+`planning -> executing -> merged`.
+
+## Self-Healing Agent
+
+One agent keeps watch over the whole swarm. When a worker exits with a failure,
+the console signals the self-healing agent over `apcall://heal`, which
+automatically dispatches a real healing worker into the **same worktree and
+branch** as the failed agent. The healing worker runs with the strongest
+available model, is given the failed worker's log tail, and is told to diagnose
+and repair the scope. Success marks the original agent `complete` (healed);
+failure retries up to `HEAL_MAX_ATTEMPTS` (2) before escalating to master.
+Auto-repair can be armed/muted from the **Repair Agent** panel, and a manual
+**Dispatch Healer** button is available in the agent inspector for any failed or
+conflicted worker.
+
 ## Voice
 
 Voice input uses the browser Web Speech API when available. Useful phrases:

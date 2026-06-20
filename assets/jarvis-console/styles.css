@@ -1324,12 +1324,389 @@ textarea:focus {
   }
 }
 
+/* ============================================================
+   apcall mesh + self-healing + whiteboard (Jarvis swarm v2)
+   ============================================================ */
+
+:root {
+  --violet: #b48bff;
+  --heal: #ff7ad9;
+}
+
+/* --- dashing touches --------------------------------------- */
+button.primary {
+  position: relative;
+  overflow: hidden;
+}
+
+button.primary::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: linear-gradient(105deg, transparent 30%, rgba(255, 255, 255, 0.45) 50%, transparent 70%);
+  transform: translateX(-130%);
+  animation: sheen 3.6s infinite ease-in-out;
+  pointer-events: none;
+}
+
+.metric-grid {
+  grid-template-columns: repeat(6, minmax(0, 1fr));
+}
+
+.metric-grid article {
+  transition: border-color 200ms ease, box-shadow 200ms ease, transform 200ms ease;
+}
+
+.metric-grid article:hover {
+  transform: translateY(-2px);
+  border-color: var(--green);
+  box-shadow: 0 0 26px rgba(53, 255, 143, 0.18);
+}
+
+.metric-heal strong {
+  color: var(--heal);
+  text-shadow: 0 0 16px rgba(255, 122, 217, 0.5);
+}
+
+.status-healing {
+  color: var(--heal);
+  text-shadow: 0 0 14px rgba(255, 122, 217, 0.45);
+}
+
+/* --- shared mesh panels ------------------------------------ */
+.mesh-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 16px;
+  margin-bottom: 18px;
+}
+
+.apcall-panel,
+.healing-panel {
+  position: relative;
+  display: grid;
+  gap: 12px;
+  align-content: start;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 16px;
+  background:
+    linear-gradient(135deg, rgba(53, 255, 143, 0.09), transparent 24%),
+    linear-gradient(180deg, var(--panel), var(--panel-2));
+  box-shadow: 0 16px 44px var(--shadow), inset 0 1px 0 rgba(255, 255, 255, 0.045);
+}
+
+.healing-panel {
+  background:
+    linear-gradient(135deg, rgba(255, 122, 217, 0.12), transparent 26%),
+    linear-gradient(180deg, var(--panel), var(--panel-2));
+  border-color: rgba(255, 122, 217, 0.28);
+}
+
+/* --- apcall feed ------------------------------------------- */
+.apcall-feed {
+  display: grid;
+  gap: 6px;
+  max-height: 320px;
+  overflow: auto;
+  padding-right: 4px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+}
+
+.apcall-feed.compact {
+  max-height: 220px;
+}
+
+.apcall-msg {
+  display: grid;
+  grid-template-columns: 70px minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: center;
+  padding: 7px 10px;
+  border: 1px solid rgba(78, 231, 255, 0.14);
+  border-left-width: 3px;
+  border-radius: 6px;
+  background: rgba(5, 12, 21, 0.7);
+  font-size: 12px;
+}
+
+.apcall-msg .ap-time {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.apcall-msg .ap-route b {
+  color: var(--text);
+}
+
+.apcall-msg .ap-type {
+  justify-self: end;
+  padding: 2px 8px;
+  border-radius: 999px;
+  background: rgba(78, 231, 255, 0.08);
+  color: var(--cyan);
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.apcall-msg.ap-heal {
+  border-left-color: var(--heal);
+}
+.apcall-msg.ap-heal .ap-type {
+  background: rgba(255, 122, 217, 0.12);
+  color: var(--heal);
+}
+.apcall-msg.ap-good {
+  border-left-color: var(--green);
+}
+.apcall-msg.ap-good .ap-type {
+  background: rgba(82, 255, 184, 0.12);
+  color: var(--green);
+}
+.apcall-msg.ap-plan {
+  border-left-color: var(--violet);
+}
+.apcall-msg.ap-plan .ap-type {
+  background: rgba(180, 139, 255, 0.14);
+  color: var(--violet);
+}
+.apcall-msg.ap-task {
+  border-left-color: var(--cyan);
+}
+.apcall-msg.ap-default {
+  border-left-color: rgba(139, 164, 184, 0.5);
+}
+
+/* --- healing board ----------------------------------------- */
+.heal-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.healing-board {
+  display: grid;
+  gap: 8px;
+}
+
+.heal-card {
+  display: grid;
+  gap: 4px;
+  padding: 10px 12px;
+  border: 1px solid rgba(255, 122, 217, 0.32);
+  border-radius: 6px;
+  background: rgba(28, 8, 22, 0.72);
+}
+
+.heal-card strong {
+  font-size: 13px;
+}
+
+.heal-card small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.heal-card.status-running {
+  border-color: rgba(255, 122, 217, 0.7);
+  box-shadow: 0 0 22px rgba(255, 122, 217, 0.18);
+  animation: healPulse 1.7s infinite ease-in-out;
+}
+
+.army-healing {
+  border-color: rgba(255, 122, 217, 0.6);
+  box-shadow: 0 0 24px rgba(255, 122, 217, 0.16), inset 0 0 22px rgba(255, 122, 217, 0.08);
+  animation: healPulse 1.8s infinite ease-in-out;
+}
+
+.inspector-actions {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+/* --- whiteboard modal -------------------------------------- */
+.whiteboard-panel {
+  width: min(1100px, 100%);
+  display: grid;
+  gap: 16px;
+}
+
+.whiteboard-surface {
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr);
+  gap: 16px;
+  padding: 16px;
+  border: 1px solid rgba(53, 255, 143, 0.22);
+  border-radius: 10px;
+  background:
+    radial-gradient(circle at 0% 0%, rgba(53, 255, 143, 0.12), transparent 60%),
+    repeating-linear-gradient(0deg, rgba(255, 255, 255, 0.03) 0 1px, transparent 1px 26px),
+    rgba(3, 12, 10, 0.9);
+}
+
+.wb-mission {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  padding: 14px;
+  border: 1px dashed rgba(53, 255, 143, 0.5);
+  border-radius: 10px;
+  background: rgba(53, 255, 143, 0.06);
+}
+
+.wb-chip,
+.wb-lane-index {
+  justify-self: start;
+  padding: 3px 9px;
+  border-radius: 999px;
+  background: rgba(53, 255, 143, 0.14);
+  color: var(--green);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.wb-mission p {
+  color: var(--text);
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.wb-lanes {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 12px;
+  align-content: start;
+}
+
+.wb-lane {
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  padding: 12px;
+  border: 1px solid rgba(78, 231, 255, 0.26);
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(10, 24, 30, 0.95), rgba(4, 12, 18, 0.95));
+  box-shadow: 0 10px 26px rgba(0, 0, 0, 0.4);
+  transform: rotate(-0.4deg);
+  transition: transform 160ms ease, border-color 160ms ease;
+}
+
+.wb-lane:nth-child(even) {
+  transform: rotate(0.5deg);
+}
+
+.wb-lane:hover {
+  transform: rotate(0) translateY(-2px);
+  border-color: var(--cyan);
+}
+
+.wb-lane strong {
+  font-size: 13px;
+}
+
+.wb-lane p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wb-lane small {
+  color: var(--muted);
+  font-size: 11px;
+}
+
+.wb-lane .wb-branch {
+  color: var(--green);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
+.wb-collab {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 16px;
+}
+
+.wb-collab h3 {
+  margin: 0 0 8px;
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--cyan);
+}
+
+.wb-notes {
+  display: grid;
+  gap: 6px;
+  max-height: 200px;
+  overflow: auto;
+  margin-bottom: 10px;
+}
+
+.wb-note {
+  display: grid;
+  gap: 2px;
+  padding: 8px 10px;
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  background: rgba(5, 14, 12, 0.8);
+  font-size: 12px;
+}
+
+.wb-note b {
+  color: var(--green);
+}
+
+.wb-note small {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.wb-note-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px;
+}
+
+@keyframes sheen {
+  0%,
+  60%,
+  100% {
+    transform: translateX(-130%);
+  }
+  80% {
+    transform: translateX(130%);
+  }
+}
+
+@keyframes healPulse {
+  50% {
+    box-shadow: 0 0 30px rgba(255, 122, 217, 0.32), inset 0 0 26px rgba(255, 122, 217, 0.12);
+  }
+}
+
 @media (max-width: 860px) {
   .hero {
     grid-template-columns: 1fr;
   }
 
   .attack-path {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .mesh-grid,
+  .whiteboard-surface,
+  .wb-collab {
+    grid-template-columns: 1fr;
+  }
+
+  .metric-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }

@@ -35,10 +35,48 @@ PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 STATE_LOCK = threading.Lock()
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
+APCALL_CAP = 200
+HEAL_MAX_ATTEMPTS = 2
+# apcall is the Jarvis inter-agent protocol. Every agent lifecycle transition,
+# planning broadcast, and self-heal handshake is published as an apcall message
+# so the console can show agents coordinating with each other in real time.
+APCALL_HEAL_BUS = "apcall://heal"
 
 
 def now() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+def apcall(
+    state: dict[str, Any],
+    sender: str,
+    receiver: str,
+    kind: str,
+    payload: dict[str, Any] | None = None,
+    summary: str | None = None,
+) -> dict[str, Any]:
+    """Publish one message on the apcall inter-agent bus.
+
+    apcall (Agent Protocol Call) is how every node in the swarm talks to the
+    others: the master broadcasts the mission, workers report status, and the
+    self-healing agent negotiates repairs. Messages are persisted on the state
+    so the browser can render the live mesh.
+    """
+    bus = state.setdefault("apcall", [])
+    stamp = datetime.now().strftime("%H%M%S%f")
+    message = {
+        "id": f"apcall-{stamp}-{len(bus)}",
+        "time": now(),
+        "from": sender,
+        "to": receiver,
+        "type": kind,
+        "payload": payload or {},
+    }
+    bus.append(message)
+    state["apcall"] = bus[-APCALL_CAP:]
+    if summary:
+        event(state, summary)
+    return message
 
 
 def run(cmd: list[str], cwd: Path = ROOT, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -59,7 +97,15 @@ def ensure_dirs() -> None:
 
 
 def default_state() -> dict[str, Any]:
-    return {"plan": [], "plan_preview": False, "agents": [], "events": []}
+    return {
+        "plan": [],
+        "plan_preview": False,
+        "agents": [],
+        "events": [],
+        "apcall": [],
+        "whiteboard": None,
+        "healing": {"enabled": True, "attempts": {}},
+    }
 
 
 def default_settings() -> dict[str, Any]:
@@ -286,6 +332,9 @@ def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
     state["root_dirty"] = workspace["dirty"] or not workspace["is_git_repo"]
     state["current_branch"] = workspace["branch"]
     state["summary"] = state_summary(state)
+    state.setdefault("apcall", [])
+    state.setdefault("whiteboard", None)
+    state.setdefault("healing", {"enabled": True, "attempts": {}})
     try:
         state["jcode_path"] = resolve_jcode_binary()
         state["jcode_available"] = True
@@ -621,28 +670,195 @@ def commit_if_needed(agent: dict[str, Any]) -> None:
     agent["commit_output"] = (commit.stdout + commit.stderr).strip()[-2000:]
 
 
+def log_tail(raw_path: str | None, limit: int = 6000) -> str:
+    if not raw_path:
+        return ""
+    path = Path(raw_path)
+    if not path.exists() or not path.is_file():
+        return ""
+    return path.read_text(encoding="utf-8", errors="replace")[-limit:]
+
+
+def dispatch_healer(state: dict[str, Any], target: dict[str, Any], attempt: int) -> None:
+    """Launch a real self-healing worker on the failed agent's own branch."""
+    worktree = Path(target.get("worktree") or "")
+    if not worktree.exists():
+        target["status"] = "failed"
+        apcall(
+            state,
+            APCALL_HEAL_BUS,
+            target["id"],
+            "heal.abort",
+            {"reason": "worktree missing"},
+            f"Self-Healing Agent could not reach {target['id']}: worktree is gone.",
+        )
+        return
+    try:
+        jcode = resolve_jcode_binary()
+    except RuntimeError as exc:
+        target["status"] = "failed"
+        apcall(state, APCALL_HEAL_BUS, target["id"], "heal.abort", {"reason": str(exc)})
+        return
+    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
+    settings = load_settings(include_secrets=True)
+    selection = select_healer_model(settings)
+    model_args, model_env, provider_label, model_label = launch_args_for(selection)
+    healer_id = f"healer-{target['id']}-{attempt}"
+    healer_log = LOG_DIR / f"{healer_id}.log"
+    prompt = healer_prompt(target, log_tail(target.get("log")), attempt)
+    log_file = healer_log.open("w", encoding="utf-8")
+    child_env = os.environ.copy()
+    child_env.update(model_env)
+    process = subprocess.Popen(
+        [jcode, *extra_args, *model_args, "run", prompt],
+        cwd=str(worktree),
+        env=child_env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    PROCESSES[healer_id] = process
+    healer = {
+        "id": healer_id,
+        "role": "Self-Healing Agent",
+        "kind": "healer",
+        "heals": target["id"],
+        "attempt": attempt,
+        "task": f"Diagnose and repair {target['id']} ({target.get('role')}) so its scope works.",
+        "status": "running",
+        "branch": target.get("branch"),
+        "base_branch": target.get("base_branch"),
+        "worktree": str(worktree),
+        "log": str(healer_log),
+        "provider": provider_label,
+        "model": model_label,
+        "pid": process.pid,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    state.setdefault("agents", []).append(healer)
+    target["status"] = "healing"
+    target["healed_by"] = healer_id
+    apcall(
+        state,
+        APCALL_HEAL_BUS,
+        target["id"],
+        "heal.dispatch",
+        {"healer": healer_id, "attempt": attempt, "model": f"{provider_label}/{model_label}"},
+        f"Self-Healing Agent dispatched to repair {target['id']} (attempt {attempt}/{HEAL_MAX_ATTEMPTS}).",
+    )
+
+
+def recreate_task_for(state: dict[str, Any], agent_id: str) -> None:
+    """Send a failed task back to the board so another agent can claim it."""
+    whiteboard = state.get("whiteboard")
+    if not isinstance(whiteboard, dict):
+        return
+    for task in whiteboard.get("tasks", []):
+        if task.get("assignee") == agent_id:
+            task["status"] = "todo"
+            task["recreated"] = True
+
+
+def maybe_dispatch_healer(state: dict[str, Any], target: dict[str, Any]) -> None:
+    """The healing agent keeps watch and steps in when a worker cannot succeed."""
+    if target.get("kind") == "healer":
+        return
+    healing = state.setdefault("healing", {"enabled": True, "attempts": {}})
+    if not healing.get("enabled", True):
+        apcall(state, APCALL_HEAL_BUS, target["id"], "heal.muted", {}, None)
+        return
+    attempts = healing.setdefault("attempts", {})
+    done = int(attempts.get(target["id"], 0))
+    if done >= HEAL_MAX_ATTEMPTS:
+        recreate_task_for(state, target["id"])
+        apcall(
+            state,
+            APCALL_HEAL_BUS,
+            target["id"],
+            "heal.giveup",
+            {"attempts": done},
+            f"Self-Healing Agent exhausted {done} repair attempts on {target['id']}; task recreated for pickup.",
+        )
+        return
+    for other in state.get("agents", []):
+        if other.get("kind") == "healer" and other.get("heals") == target["id"] and other.get("status") in ("starting", "running"):
+            return
+    attempt = done + 1
+    attempts[target["id"]] = attempt
+    dispatch_healer(state, target, attempt)
+
+
+def handle_healer_exit(state: dict[str, Any], healer: dict[str, Any], code: int) -> None:
+    target = agent_by_id(state, str(healer.get("heals") or ""))
+    if code == 0:
+        healer["status"] = "complete"
+        if target:
+            commit_if_needed(target)
+            target["status"] = "complete"
+            target["healed"] = True
+            apcall(
+                state,
+                healer["id"],
+                target["id"],
+                "heal.result",
+                {"ok": True, "branch": target.get("branch")},
+                f"Self-Healing Agent repaired {target['id']}. Branch {target.get('branch')} is healthy again.",
+            )
+        return
+    healer["status"] = "failed"
+    if target:
+        apcall(
+            state,
+            healer["id"],
+            APCALL_HEAL_BUS,
+            "heal.result",
+            {"ok": False, "exit_code": code, "attempt": healer.get("attempt")},
+            f"Repair attempt {healer.get('attempt')} for {target['id']} failed (exit {code}).",
+        )
+        maybe_dispatch_healer(state, target)
+
+
 def poll_processes(state: dict[str, Any]) -> None:
     changed = False
-    for agent in state.get("agents", []):
+    for agent in list(state.get("agents", [])):
         process = PROCESSES.get(agent["id"])
         if not process:
             continue
         code = process.poll()
         if code is None:
-            agent["status"] = "running"
+            if agent.get("status") != "healing":
+                agent["status"] = "running"
             continue
         PROCESSES.pop(agent["id"], None)
         agent["exit_code"] = code
         agent["ended_at"] = datetime.now().isoformat(timespec="seconds")
-        if code == 0:
+        if agent.get("kind") == "healer":
+            handle_healer_exit(state, agent, code)
+        elif code == 0:
             commit_if_needed(agent)
             agent["status"] = "complete"
-            event(state, f"{agent['id']} completed on {agent.get('branch')}")
+            apcall(
+                state,
+                agent["id"],
+                "master",
+                "status.complete",
+                {"branch": agent.get("branch")},
+                f"{agent['id']} completed on {agent.get('branch')}",
+            )
         else:
             agent["status"] = "failed"
-            event(state, f"{agent['id']} failed with exit code {code}")
+            apcall(
+                state,
+                agent["id"],
+                APCALL_HEAL_BUS,
+                "status.failed",
+                {"exit_code": code},
+                f"{agent['id']} failed with exit code {code}; signalling the self-healing agent.",
+            )
+            maybe_dispatch_healer(state, agent)
         changed = True
     if changed:
+        sync_tasks(state)
         save_state(state)
 
 
@@ -694,6 +910,142 @@ def choose_plan(task: str, max_agents: int = 12) -> list[dict[str, str]]:
         }
         for i in range(count)
     ]
+
+
+def build_whiteboard(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
+    """Turn the mission into a live checklist the swarm works off of.
+
+    The whiteboard is a shared task board: one checklist item per scope. Items
+    start as ``todo`` and move through ``in_progress`` -> ``done`` driven by the
+    real agent assigned to them. If an item ``fail``s it is recreated so another
+    agent (the self-healing agent) can pick it up and finish the work.
+    """
+    roles = [str(item.get("role") or f"Worker {i}") for i, item in enumerate(plan, start=1)]
+    architect = next((role for role in roles if "architect" in role.lower()), "")
+    tasks: list[dict[str, Any]] = []
+    for index, item in enumerate(plan, start=1):
+        role = str(item.get("role") or f"Worker {index}")
+        lower = role.lower()
+        if architect and role == architect:
+            depends_on: list[str] = []
+        elif any(word in lower for word in ["git", "integration", "merge", "qa", "polish", "docs"]):
+            depends_on = [r for r in roles if r != role]
+        elif architect:
+            depends_on = [architect]
+        else:
+            depends_on = []
+        tasks.append(
+            {
+                "id": f"task-{index}",
+                "index": index,
+                "title": role,
+                "detail": str(item.get("task") or ""),
+                "status": "todo",
+                "assignee": "",
+                "picked_by": "",
+                "branch": "",
+                "depends_on": depends_on,
+                "provider": str(item.get("provider") or ""),
+                "model": str(item.get("model") or ""),
+            }
+        )
+    return {
+        "mission": task,
+        "created": now(),
+        "status": "planning",
+        "tasks": tasks,
+        "notes": [],
+        "done_count": 0,
+        "total_count": len(tasks),
+        "merge_target": "combined into the base branch under master review",
+    }
+
+
+def sync_tasks(state: dict[str, Any]) -> None:
+    """Drive the checklist from the real status of each assigned agent."""
+    whiteboard = state.get("whiteboard")
+    if not isinstance(whiteboard, dict):
+        return
+    tasks = whiteboard.get("tasks") or []
+    workers = {
+        agent.get("id"): agent
+        for agent in state.get("agents", [])
+        if agent.get("kind") != "healer"
+    }
+    status_map = {
+        "starting": "in_progress",
+        "running": "in_progress",
+        "healing": "healing",
+        "complete": "done",
+        "failed": "failed",
+        "conflict": "failed",
+        "stopped": "todo",
+    }
+    done = 0
+    active = 0
+    for task in tasks:
+        agent = workers.get(task.get("assignee"))
+        if agent:
+            mapped = status_map.get(str(agent.get("status")), task.get("status", "todo"))
+            if mapped == "failed" and task.get("recreated"):
+                mapped = "todo"
+            elif mapped in ("in_progress", "healing", "done"):
+                task["recreated"] = False
+            task["status"] = mapped
+            task["branch"] = agent.get("branch") or task.get("branch", "")
+            if agent.get("healed_by"):
+                task["picked_by"] = agent["healed_by"]
+        if task.get("status") == "done":
+            done += 1
+        elif task.get("status") in ("in_progress", "healing"):
+            active += 1
+    whiteboard["done_count"] = done
+    whiteboard["total_count"] = len(tasks)
+    if not tasks:
+        whiteboard["status"] = whiteboard.get("status", "planning")
+    elif done == len(tasks):
+        whiteboard["status"] = "complete"
+    elif active:
+        whiteboard["status"] = "executing"
+
+
+def select_healer_model(settings: dict[str, Any]) -> dict[str, Any] | None:
+    """The self-healing agent always reaches for the strongest available model."""
+    for tier in ("premium", "balanced", "economy"):
+        candidates = model_candidates(settings, tier)
+        if candidates:
+            best = candidates[-1] if tier == "premium" else candidates[0]
+            return {"provider_id": best["provider_id"], "provider": best["provider"], "model": best["model"]}
+    return None
+
+
+def healer_prompt(target: dict[str, Any], log_tail: str, attempt: int) -> str:
+    return f"""You are the Jarvis Self-Healing Agent.
+
+A worker agent failed and you have been dispatched over the apcall protocol to
+repair its branch so the original scope works. You are operating inside the
+exact same git worktree and branch as the failed worker.
+
+Failed worker role:
+{target.get('role')}
+
+Original scoped task:
+{target.get('task')}
+
+This is repair attempt {attempt} of {HEAL_MAX_ATTEMPTS}.
+
+Tail of the failed worker's log:
+---
+{log_tail or '(no log captured)'}
+---
+
+Rules:
+- Diagnose the root cause from the log and the working tree, then fix it.
+- Stay inside this worktree and branch only; do not touch other branches.
+- Make the original scope actually work: build, run, and verify what you can.
+- Commit your repair before finishing.
+- End with a concise report: root cause, the fix, and how you verified it.
+"""
 
 
 def worker_prompt(agent: dict[str, Any], mission: str) -> str:
@@ -774,10 +1126,28 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
             agent["pid"] = process.pid
             agent["status"] = "running"
             new_agents.append(agent)
-            event(state, f"{agent_id} launched on {branch} with {provider_label}/{model_label}")
+            apcall(
+                state,
+                "master",
+                agent_id,
+                "task.dispatch",
+                {"branch": branch, "model": f"{provider_label}/{model_label}"},
+                f"{agent_id} launched on {branch} with {provider_label}/{model_label}",
+            )
         state["plan"] = plan
         state["plan_preview"] = False
+        whiteboard = state.get("whiteboard")
+        if not isinstance(whiteboard, dict) or not whiteboard.get("tasks"):
+            whiteboard = build_whiteboard(task, plan)
+            state["whiteboard"] = whiteboard
+        whiteboard["status"] = "executing"
+        for task_item, agent in zip(whiteboard["tasks"], new_agents):
+            task_item["assignee"] = agent["id"]
+            task_item["branch"] = agent["branch"]
+            task_item["status"] = "in_progress"
         state.setdefault("agents", []).extend(new_agents)
+        sync_tasks(state)
+        apcall(state, "master", "all", "swarm.deploy", {"count": len(new_agents)})
         save_state(state)
         return hydrate_state(state)
 
@@ -829,6 +1199,60 @@ def stop_agent(agent_id: str) -> dict[str, Any]:
         return hydrate_state(state)
 
 
+def trigger_heal(agent_id: str) -> dict[str, Any]:
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+        agent = agent_by_id(state, agent_id)
+        if not agent:
+            raise RuntimeError(f"Unknown agent: {agent_id}")
+        if agent.get("kind") == "healer":
+            raise RuntimeError("Healing agents do not heal themselves.")
+        if agent.get("status") in ("starting", "running"):
+            raise RuntimeError("Agent is still working; stop it before requesting a heal.")
+        healing = state.setdefault("healing", {"enabled": True, "attempts": {}})
+        healing["enabled"] = True
+        healing.setdefault("attempts", {})[agent_id] = 0
+        apcall(state, "master", APCALL_HEAL_BUS, "heal.request", {"target": agent_id}, f"Master requested a manual heal for {agent_id}.")
+        maybe_dispatch_healer(state, agent)
+        sync_tasks(state)
+        save_state(state)
+        return hydrate_state(state)
+
+
+def set_healing(enabled: bool) -> dict[str, Any]:
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+        healing = state.setdefault("healing", {"enabled": True, "attempts": {}})
+        healing["enabled"] = bool(enabled)
+        apcall(
+            state,
+            "master",
+            APCALL_HEAL_BUS,
+            "heal.toggle",
+            {"enabled": bool(enabled)},
+            f"Self-healing auto-repair {'armed' if enabled else 'muted'} by master.",
+        )
+        save_state(state)
+        return hydrate_state(state)
+
+
+def add_whiteboard_note(text: str, author: str = "master") -> dict[str, Any]:
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+        whiteboard = state.get("whiteboard")
+        if not isinstance(whiteboard, dict):
+            raise RuntimeError("No whiteboard yet. Plan a mission first.")
+        note = {"time": now(), "author": author[:60] or "master", "text": text[:500]}
+        whiteboard.setdefault("notes", []).append(note)
+        whiteboard["notes"] = whiteboard["notes"][-40:]
+        apcall(state, author or "master", "whiteboard", "plan.note", {"text": text[:200]})
+        save_state(state)
+        return hydrate_state(state)
+
+
 def merge_finished() -> dict[str, Any]:
     with STATE_LOCK:
         state = load_state()
@@ -854,9 +1278,14 @@ def merge_finished() -> dict[str, Any]:
                 raise RuntimeError(f"Conflict while merging {branch}. Resolve in root worktree.")
             agent["merged"] = True
             merged.append(branch)
-            event(state, f"Merged {branch}")
+            apcall(state, agent["id"], "master", "branch.merged", {"branch": branch}, f"Merged {branch}")
         if not merged:
             event(state, "No completed worker branches were ready to merge.")
+        else:
+            whiteboard = state.get("whiteboard")
+            if isinstance(whiteboard, dict):
+                whiteboard["status"] = "merged"
+            apcall(state, "master", "all", "swarm.combined", {"branches": merged})
         save_state(state)
         return hydrate_state(state)
 
@@ -936,7 +1365,17 @@ class Handler(BaseHTTPRequestHandler):
                     plan = choose_plan(task, max_agents=max_agents)
                     state["plan"] = plan
                     state["plan_preview"] = True
-                    event(state, f"Master planned {len(plan)} worker scope(s).")
+                    state["whiteboard"] = build_whiteboard(task, plan)
+                    apcall(
+                        state,
+                        "master",
+                        "all",
+                        "plan.broadcast",
+                        {"mission": task[:400], "tasks": len(plan)},
+                        f"Master broke the mission into {len(plan)} checklist tasks.",
+                    )
+                    for task_item in state["whiteboard"]["tasks"]:
+                        apcall(state, task_item["title"], "whiteboard", "plan.contribute", {"focus": task_item["detail"][:200]})
                     save_state(state)
                     self.send_json(hydrate_state(state))
                 return
@@ -947,8 +1386,47 @@ class Handler(BaseHTTPRequestHandler):
                     raise RuntimeError("Mission is empty.")
                 self.send_json(start_workers(task, plan))
                 return
+            if self.path == "/api/launch":
+                task = str(body.get("task", "")).strip()
+                if not task:
+                    raise RuntimeError("Mission is empty.")
+                max_agents = max(1, min(12, int(body.get("max_agents") or 6)))
+                plan = clean_plan(body.get("plan")) or choose_plan(task, max_agents=max_agents)
+                with STATE_LOCK:
+                    state = load_state()
+                    state["plan"] = plan
+                    state["plan_preview"] = True
+                    state["whiteboard"] = build_whiteboard(task, plan)
+                    apcall(
+                        state,
+                        "master",
+                        "all",
+                        "plan.broadcast",
+                        {"mission": task[:400], "tasks": len(plan)},
+                        f"Master broke the mission into {len(plan)} checklist tasks.",
+                    )
+                    for task_item in state["whiteboard"]["tasks"]:
+                        apcall(state, task_item["title"], "whiteboard", "plan.contribute", {"focus": task_item["detail"][:200]})
+                    save_state(state)
+                self.send_json(start_workers(task, plan))
+                return
             if self.path == "/api/merge":
                 self.send_json(merge_finished())
+                return
+            if self.path == "/api/heal":
+                agent_id = str(body.get("id") or "").strip()
+                if not agent_id:
+                    raise RuntimeError("Missing agent id.")
+                self.send_json(trigger_heal(agent_id))
+                return
+            if self.path == "/api/healing/toggle":
+                self.send_json(set_healing(bool(body.get("enabled", True))))
+                return
+            if self.path == "/api/whiteboard/note":
+                text = str(body.get("text") or "").strip()
+                if not text:
+                    raise RuntimeError("Note text is empty.")
+                self.send_json(add_whiteboard_note(text, str(body.get("author") or "master")))
                 return
             if self.path == "/api/agent/stop":
                 agent_id = str(body.get("id") or "").strip()

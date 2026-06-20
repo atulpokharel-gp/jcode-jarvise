@@ -26,17 +26,13 @@
             under command-room review.
           </p>
           <div class="controls">
-            <button id="refreshButton">Refresh Console</button>
             <button id="settingsButton">Settings</button>
           </div>
         </div>
-        <aside class="holo-card" aria-label="System breach animation">
+        <aside class="holo-card" aria-label="Live swarm activity">
           <div class="orb" aria-hidden="true"><span></span></div>
-          <div class="terminal-lines" aria-hidden="true">
-            <span>&gt; uplink.agent_matrix()</span>
-            <span>&gt; spawn --parallel --isolated</span>
-            <span>&gt; git.merge.guard = armed</span>
-            <span>&gt; voice.command.stream = hot</span>
+          <div id="liveActivity" class="live-activity">
+            <span class="subtle">Idle. Enter a mission and launch the swarm.</span>
           </div>
         </aside>
       </section>
@@ -77,6 +73,10 @@
           <span>Conflicts</span>
           <strong id="metricConflict">0</strong>
         </article>
+        <article class="metric-heal">
+          <span>Self-Heal</span>
+          <strong id="metricHealing">0</strong>
+        </article>
       </section>
 
       <section class="command-deck">
@@ -95,12 +95,10 @@
             <span>Merge</span>
           </div>
           <div class="controls">
-            <button id="planButton">Plan Agents</button>
-            <button id="startButton" class="primary">Start Workers</button>
-            <button id="mergeButton" class="danger">Merge Finished</button>
+            <button id="launchButton" class="primary launch-button">Launch Swarm</button>
           </div>
           <div class="planner-controls">
-            <label for="agentLimit">Agent limit <span id="agentLimitValue">6</span></label>
+            <label for="agentLimit">Agents <span id="agentLimitValue">6</span></label>
             <input id="agentLimit" type="range" min="1" max="12" value="6" />
             <span id="launchGate" class="gate">Checking git state...</span>
           </div>
@@ -179,6 +177,44 @@
         <div id="armyBoard" class="army-board"></div>
       </section>
 
+      <section class="mesh-grid" aria-label="Inter-agent protocol and self-healing">
+        <article class="apcall-panel">
+          <div class="section-head compact">
+            <div>
+              <p class="eyebrow">apcall protocol</p>
+              <h2>Inter-Agent Mesh</h2>
+            </div>
+            <span id="apcallSummary" class="badge">idle</span>
+          </div>
+          <p class="subtle">
+            Every agent talks over <strong>apcall</strong> — the master broadcasts the
+            mission, workers report status, and the self-healing agent negotiates
+            repairs. Live traffic below.
+          </p>
+          <div id="apcallFeed" class="apcall-feed"></div>
+        </article>
+
+        <article class="healing-panel">
+          <div class="section-head compact">
+            <div>
+              <p class="eyebrow">self-healing</p>
+              <h2>Repair Agent</h2>
+            </div>
+            <span id="healingStatus" class="badge">armed</span>
+          </div>
+          <p class="subtle">
+            One agent keeps watch over the whole swarm. If a worker can't succeed,
+            it auto-dispatches a healing agent onto that branch to diagnose and fix
+            it, up to two attempts before escalating to master.
+          </p>
+          <div class="heal-controls">
+            <button id="healToggle" class="primary">Auto-Repair: On</button>
+            <span id="healWatch" class="subtle">Watching 0 agents.</span>
+          </div>
+          <div id="healingBoard" class="healing-board"></div>
+        </article>
+      </section>
+
       <section class="status-grid">
         <article>
           <div class="section-head compact">
@@ -199,20 +235,16 @@
       <section>
         <div class="section-head">
           <h2>Worker Terminals</h2>
-          <span id="agentCount" class="badge">0 active</span>
+          <div class="head-actions">
+            <span id="agentCount" class="badge">0 active</span>
+            <button id="consolesButton">Open Consoles</button>
+          </div>
         </div>
+        <p class="subtle">
+          Each agent runs its own live console. They open themselves as workers
+          start — click any worker to pop its terminal forward.
+        </p>
         <div id="agents" class="agents"></div>
-      </section>
-
-      <section class="inspector">
-        <div class="section-head">
-          <h2>Agent Inspector</h2>
-          <span id="selectedAgent" class="badge">none selected</span>
-        </div>
-        <div class="inspector-body">
-          <div id="agentDetails" class="detail-card subtle">Select a worker to inspect its live log.</div>
-          <pre id="agentLog" class="agent-log">No log selected.</pre>
-        </div>
       </section>
 
       <section>
@@ -223,6 +255,54 @@
         <div id="events" class="events"></div>
       </section>
     </main>
+
+    <div id="whiteboardModal" class="modal whiteboard-modal" hidden>
+      <div class="modal-panel whiteboard-panel">
+        <header class="modal-head">
+          <div>
+            <p class="eyebrow">Shared planning surface</p>
+            <h2>Agent Whiteboard</h2>
+          </div>
+          <button id="closeWhiteboard">Close</button>
+        </header>
+        <p class="subtle">
+          The master's single thought is rerouted to every agent here. They plan
+          together, claim a branch, then the work is combined back at the end.
+        </p>
+
+        <div class="whiteboard-surface">
+          <div class="wb-mission">
+            <span class="wb-chip">master thinking</span>
+            <p id="wbMission">No mission on the board yet.</p>
+            <span id="wbStatus" class="badge">idle</span>
+            <div class="wb-progress"><div id="wbProgressBar" class="wb-progress-bar"></div></div>
+            <span id="wbProgressText" class="subtle">0 / 0 done</span>
+          </div>
+          <div id="wbTasks" class="wb-tasks"></div>
+        </div>
+
+        <div class="wb-collab">
+          <div class="wb-notes-col">
+            <h3>Planning notes</h3>
+            <div id="wbNotes" class="wb-notes"></div>
+            <div class="wb-note-row">
+              <input id="wbNoteInput" placeholder="Add a note to the board..." />
+              <button id="wbNoteButton">Post</button>
+            </div>
+          </div>
+          <div class="wb-feed-col">
+            <h3>apcall on the board</h3>
+            <div id="wbFeed" class="apcall-feed compact"></div>
+          </div>
+        </div>
+
+        <div class="controls">
+          <button id="wbActionButton" class="primary">Launch Swarm</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="consoleDeck" class="console-deck" hidden></div>
 
     <div id="settingsModal" class="modal" hidden>
       <div class="modal-panel">
