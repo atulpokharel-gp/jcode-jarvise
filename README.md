@@ -20,7 +20,7 @@ Built for multi-session workflows, infinite customizability, and performance.
 
 <br>
 
-[Features](#features) · [Install](#installation) · [Quick Start](#quick-start) · [Further Reading](#further-reading) · [Contributing](CONTRIBUTING.md)
+[Features](#features) · [Install](#installation) · [Quick Start](#quick-start) · [Jarvis Console](#jarvis-console) · [Further Reading](#further-reading) · [Contributing](CONTRIBUTING.md)
 
 </div>
 
@@ -316,6 +316,29 @@ Spawn two or more agents in the same repo, and they will automatically be manage
 </div>
 
 Agents are also able to spawn their own swarms autonomously. They have a swarm tool which allows them to spawn in their own teamates to accomplish tasks in parallel. Doing so turns the main agent into a coordinator and the spawned agents into workers. Groups of agents, their messaging channels, their completion statuses, etc are all automatically managed. This can be done headlessly or headed.
+
+---
+
+## Jarvis Console
+
+The Jarvis Console is a local browser control room for running a whole team of jcode worker agents from one screen. You describe a mission and Jarvis breaks it into a checklist, launches an isolated worker agent per task in its own git worktree/branch, watches them live, repairs the ones that fail, and merges the finished branches back together.
+
+Run it from the repository root:
+
+```bash
+python scripts/jarvis_console.py
+# then open http://127.0.0.1:8765
+```
+
+- **One autonomous control.** A single **Launch Swarm** button drives the whole run: it plans the mission into a task checklist, opens the whiteboard, and starts the workers. The same button becomes **Stop Agents** while work is running and **Merge & Combine** once it is done — no button sequence to memorize.
+- **Live whiteboard checklist.** The mission is split into one task per agent. Each task moves through `todo → in progress → done`, driven entirely by the real agent assigned to it (no mock state), with a progress bar and per-task branch and assignee.
+- **Per-agent live consoles.** Every worker opens its own draggable, minimizable console window that streams the real `jcode run` log. Consoles pop up by themselves as workers start.
+- **Self-healing agent.** One agent watches the whole swarm. When a worker fails, Jarvis automatically dispatches a healing agent into that worker's own branch — with the failed log as context — to diagnose and fix it, retrying before escalating. If repair is exhausted, the task is recreated so another agent can pick it up.
+- **apcall protocol.** Every coordination event — planning broadcast, task dispatch, status, and the self-heal handshake — flows over `apcall` (Agent Protocol Call), an inter-agent message bus rendered live in the console and mirrored to an append-only NDJSON session log. A `/apcall/v1` HTTP transport exposes session replay and external-node ingest. See [apcall Network Protocol](docs/APCALL_NETWORK_PROTOCOL.md).
+- **Smart model routing.** Workers are routed across OpenAI, Claude, and NVIDIA providers by a cost/quality strategy, with optional per-agent provider/model overrides.
+- **Voice control.** Optional browser speech input and spoken status replies (say "launch swarm", "merge finished", …).
+
+Workers stay isolated in per-agent worktrees under `.jcode/jarvis-console/`, and the master merge happens in the root worktree where conflicts are visible and recoverable. Full guide: [Jarvis Console](docs/JARVIS_CONSOLE.md).
 
 ---
 
@@ -699,6 +722,8 @@ Notes:
 - [Browser Provider Protocol](docs/BROWSER_PROVIDER_PROTOCOL.md)
 - [Memory Architecture](docs/MEMORY_ARCHITECTURE.md)
 - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
+- [Jarvis Console](docs/JARVIS_CONSOLE.md)
+- [apcall Network Protocol](docs/APCALL_NETWORK_PROTOCOL.md)
 - [Server Architecture](docs/SERVER_ARCHITECTURE.md)
 - [iOS Client Notes](docs/IOS_CLIENT.md)
 - [Safety System](docs/SAFETY_SYSTEM.md)
