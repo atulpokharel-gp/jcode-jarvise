@@ -38,10 +38,12 @@ DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 APCALL_CAP = 200
 HEAL_MAX_ATTEMPTS = 2
+QA_MAX_ATTEMPTS = 2
 # apcall is the Jarvis inter-agent protocol. Every agent lifecycle transition,
 # planning broadcast, and self-heal handshake is published as an apcall message
 # so the console can show agents coordinating with each other in real time.
 APCALL_HEAL_BUS = "apcall://heal"
+APCALL_QA_BUS = "apcall://qa"
 # apcall-net: the on-disk, network-capable form of the bus. Every published
 # message is also written to an append-only NDJSON session log and exposed over
 # the /apcall/v1 HTTP transport described in docs/APCALL_NETWORK_PROTOCOL.md.
@@ -50,6 +52,7 @@ APCALL_BUSES = {
     "apcall://master",
     "apcall://workers",
     "apcall://heal",
+    "apcall://qa",
     "apcall://whiteboard",
     "apcall://observers",
     "apcall://all",
@@ -257,6 +260,7 @@ def default_state() -> dict[str, Any]:
         "apcall": [],
         "whiteboard": None,
         "healing": {"enabled": True, "attempts": {}},
+        "qa": {"enabled": True, "attempts": {}},
     }
 
 
@@ -487,6 +491,7 @@ def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("apcall", [])
     state.setdefault("whiteboard", None)
     state.setdefault("healing", {"enabled": True, "attempts": {}})
+    state.setdefault("qa", {"enabled": True, "attempts": {}})
     try:
         state["jcode_path"] = resolve_jcode_binary()
         state["jcode_available"] = True
@@ -948,7 +953,6 @@ def handle_healer_exit(state: dict[str, Any], healer: dict[str, Any], code: int)
         healer["status"] = "complete"
         if target:
             commit_if_needed(target)
-            target["status"] = "complete"
             target["healed"] = True
             apcall(
                 state,
@@ -958,6 +962,9 @@ def handle_healer_exit(state: dict[str, Any], healer: dict[str, Any], code: int)
                 {"ok": True, "branch": target.get("branch")},
                 f"Self-Healing Agent repaired {target['id']}. Branch {target.get('branch')} is healthy again.",
             )
+            # Re-verify the repaired work with QA before calling it done.
+            if not (target.get("needs_qa") and maybe_dispatch_qa(state, target)):
+                target["status"] = "complete"
         return
     healer["status"] = "failed"
     if target:
@@ -970,6 +977,170 @@ def handle_healer_exit(state: dict[str, Any], healer: dict[str, Any], code: int)
             f"Repair attempt {healer.get('attempt')} for {target['id']} failed (exit {code}).",
         )
         maybe_dispatch_healer(state, target)
+
+
+def qa_prompt(target: dict[str, Any], headline: str, attempt: int) -> str:
+    return f"""You are the QA agent for the Jarvis team. The master allocated you to
+verify the work of {target.get('role')} after it finished. You are inside that
+worker's git worktree and branch. The master holds the full project; you only
+need this:
+
+Project (headline only):
+{headline}
+
+Work to verify (the worker's assignment):
+{target.get('task')}
+
+This is QA attempt {attempt} of {QA_MAX_ATTEMPTS}.
+
+Verify that the work actually functions -- do not re-implement it:
+- Build/compile and run the project's tests where they exist.
+- If this is a web UI or browser-facing feature, use the built-in `browser` tool
+  to open the app and exercise the key flows (open, snapshot, click, type,
+  screenshot) to confirm it renders and behaves correctly. Run `browser setup`
+  first if the browser is not ready.
+- Keep changes to verification only; do not rewrite the implementation.
+
+Finish your report with EXACTLY ONE machine-readable verdict line:
+- `QA_VERDICT: PASS` -- the work builds, runs, and the key behavior works.
+- `QA_VERDICT: FAIL - <one short reason>` -- it does not.
+"""
+
+
+def read_qa_verdict(qa_agent: dict[str, Any], code: int) -> dict[str, Any]:
+    """Decide pass/fail from the QA agent's machine-readable verdict line."""
+    text = log_tail(qa_agent.get("log"), 4000)
+    match = re.search(r"QA_VERDICT:\s*(PASS|FAIL)([^\n]*)", text, re.IGNORECASE)
+    if match:
+        passed = match.group(1).upper() == "PASS"
+        reason = match.group(2).strip(" -\t").strip() or ("verified" if passed else "verification failed")
+        return {"pass": passed, "reason": reason[:200]}
+    return {"pass": code == 0, "reason": f"no verdict line; exit code {code}"}
+
+
+def dispatch_qa(state: dict[str, Any], target: dict[str, Any], attempt: int) -> bool:
+    """Launch a real QA agent in the worker's worktree to verify (and browser-test)."""
+    worktree = Path(target.get("worktree") or "")
+    if not worktree.exists():
+        return False
+    try:
+        jcode = resolve_jcode_binary()
+    except RuntimeError:
+        return False
+    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
+    settings = load_settings(include_secrets=True)
+    selection = select_healer_model(settings)
+    model_args, model_env, provider_label, model_label = launch_args_for(selection)
+    qa_id = f"qa-{target['id']}-{attempt}"
+    qa_log = LOG_DIR / f"{qa_id}.log"
+    whiteboard = state.get("whiteboard") or {}
+    headline = mission_headline(str(whiteboard.get("mission") or target.get("task") or ""))
+    prompt = qa_prompt(target, headline, attempt)
+    log_file = qa_log.open("w", encoding="utf-8")
+    child_env = os.environ.copy()
+    child_env.update(model_env)
+    process = subprocess.Popen(
+        [jcode, *extra_args, *model_args, "run", prompt],
+        cwd=str(worktree),
+        env=child_env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    PROCESSES[qa_id] = process
+    qa_agent = {
+        "id": qa_id,
+        "role": f"QA · {target.get('role')}",
+        "kind": "qa",
+        "qa_for": target["id"],
+        "attempt": attempt,
+        "task": f"Verify {target['id']} ({target.get('role')}) works; build, test, and browser-check the UI.",
+        "status": "running",
+        "branch": target.get("branch"),
+        "base_branch": target.get("base_branch"),
+        "worktree": str(worktree),
+        "log": str(qa_log),
+        "provider": provider_label,
+        "model": model_label,
+        "pid": process.pid,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    state.setdefault("agents", []).append(qa_agent)
+    target["status"] = "testing"
+    target["qa_by"] = qa_id
+    target["needs_qa"] = False
+    apcall(
+        state,
+        "master",
+        target["id"],
+        "qa.dispatch",
+        {"qa": qa_id, "attempt": attempt, "model": f"{provider_label}/{model_label}"},
+        f"Master allocated a QA agent to verify {target['id']} (attempt {attempt}/{QA_MAX_ATTEMPTS}).",
+    )
+    return True
+
+
+def maybe_dispatch_qa(state: dict[str, Any], target: dict[str, Any]) -> bool:
+    """After a worker finishes, the master allocates a QA agent to check it."""
+    if target.get("kind") in ("qa", "healer"):
+        return False
+    qa = state.setdefault("qa", {"enabled": True, "attempts": {}})
+    if not qa.get("enabled", True):
+        return False
+    attempts = qa.setdefault("attempts", {})
+    done = int(attempts.get(target["id"], 0))
+    if done >= QA_MAX_ATTEMPTS:
+        apcall(
+            state,
+            "master",
+            target["id"],
+            "qa.giveup",
+            {"attempts": done},
+            f"QA could not verify {target['id']} after {done} attempts; left for master review.",
+        )
+        return False
+    for other in state.get("agents", []):
+        if other.get("kind") == "qa" and other.get("qa_for") == target["id"] and other.get("status") in ("starting", "running"):
+            return False
+    attempt = done + 1
+    attempts[target["id"]] = attempt
+    return dispatch_qa(state, target, attempt)
+
+
+def handle_qa_exit(state: dict[str, Any], qa_agent: dict[str, Any], code: int) -> None:
+    qa_agent["status"] = "complete"
+    target = agent_by_id(state, str(qa_agent.get("qa_for") or ""))
+    verdict = read_qa_verdict(qa_agent, code)
+    qa_agent["verdict"] = verdict
+    if not target:
+        return
+    if verdict["pass"]:
+        target["status"] = "complete"
+        target["qa_passed"] = True
+        apcall(
+            state,
+            qa_agent["id"],
+            target["id"],
+            "qa.pass",
+            {"reason": verdict["reason"]},
+            f"QA passed for {target['id']}: {verdict['reason']}.",
+        )
+        return
+    target["qa_passed"] = False
+    target["needs_qa"] = True
+    apcall(
+        state,
+        qa_agent["id"],
+        "master",
+        "qa.fail",
+        {"reason": verdict["reason"]},
+        f"QA failed for {target['id']}: {verdict['reason']}. Master is reassigning the agent to fix it.",
+    )
+    maybe_dispatch_healer(state, target)
+    if target.get("status") != "healing":
+        # Could not reassign (auto-repair off or exhausted); leave it flagged.
+        target["status"] = "complete"
+        target["needs_qa"] = False
 
 
 def poll_processes(state: dict[str, Any]) -> None:
@@ -988,9 +1159,10 @@ def poll_processes(state: dict[str, Any]) -> None:
         agent["ended_at"] = datetime.now().isoformat(timespec="seconds")
         if agent.get("kind") == "healer":
             handle_healer_exit(state, agent, code)
+        elif agent.get("kind") == "qa":
+            handle_qa_exit(state, agent, code)
         elif code == 0:
             commit_if_needed(agent)
-            agent["status"] = "complete"
             apcall(
                 state,
                 agent["id"],
@@ -999,6 +1171,9 @@ def poll_processes(state: dict[str, Any]) -> None:
                 {"branch": agent.get("branch")},
                 f"{agent['id']} completed on {agent.get('branch')}",
             )
+            # Master allocates a QA agent to verify the work before it is done.
+            if not maybe_dispatch_qa(state, agent):
+                agent["status"] = "complete"
         else:
             agent["status"] = "failed"
             apcall(
@@ -1134,6 +1309,7 @@ def sync_tasks(state: dict[str, Any]) -> None:
         "starting": "in_progress",
         "running": "in_progress",
         "healing": "healing",
+        "testing": "testing",
         "complete": "done",
         "failed": "failed",
         "conflict": "failed",
@@ -1155,7 +1331,7 @@ def sync_tasks(state: dict[str, Any]) -> None:
                 task["picked_by"] = agent["healed_by"]
         if task.get("status") == "done":
             done += 1
-        elif task.get("status") in ("in_progress", "healing"):
+        elif task.get("status") in ("in_progress", "healing", "testing"):
             active += 1
     whiteboard["done_count"] = done
     whiteboard["total_count"] = len(tasks)
@@ -1222,6 +1398,8 @@ Rules:
 - Keep changes tight to your assignment; do not expand scope.
 - If you are blocked on something another agent owns, note it and stub a clean
   interface rather than building it yourself.
+- If your work has a UI, you may use the built-in `browser` tool to check it
+  renders (run `browser setup` first if needed). A QA agent will verify it after.
 - Commit your completed changes before finishing.
 - End with a concise report: files changed, validation run, risks, and blockers.
 """
@@ -1422,6 +1600,24 @@ def set_healing(enabled: bool) -> dict[str, Any]:
             "heal.toggle",
             {"enabled": bool(enabled)},
             f"Self-healing auto-repair {'armed' if enabled else 'muted'} by master.",
+        )
+        save_state(state)
+        return hydrate_state(state)
+
+
+def set_qa(enabled: bool) -> dict[str, Any]:
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+        qa = state.setdefault("qa", {"enabled": True, "attempts": {}})
+        qa["enabled"] = bool(enabled)
+        apcall(
+            state,
+            "master",
+            APCALL_QA_BUS,
+            "qa.toggle",
+            {"enabled": bool(enabled)},
+            f"QA verification {'enabled' if enabled else 'disabled'} by master.",
         )
         save_state(state)
         return hydrate_state(state)
@@ -1644,6 +1840,9 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if self.path == "/api/healing/toggle":
                 self.send_json(set_healing(bool(body.get("enabled", True))))
+                return
+            if self.path == "/api/qa/toggle":
+                self.send_json(set_qa(bool(body.get("enabled", True))))
                 return
             if self.path == "/api/whiteboard/note":
                 text = str(body.get("text") or "").strip()

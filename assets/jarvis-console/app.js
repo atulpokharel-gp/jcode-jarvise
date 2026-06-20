@@ -50,6 +50,7 @@ const apcallFeed = document.querySelector("#apcallFeed");
 const apcallSummary = document.querySelector("#apcallSummary");
 const healingStatus = document.querySelector("#healingStatus");
 const healToggle = document.querySelector("#healToggle");
+const qaToggle = document.querySelector("#qaToggle");
 const healWatch = document.querySelector("#healWatch");
 const healingBoard = document.querySelector("#healingBoard");
 const whiteboardModal = document.querySelector("#whiteboardModal");
@@ -76,6 +77,7 @@ let latestApcall = [];
 let latestWhiteboard = null;
 let latestHealing = { enabled: true, attempts: {} };
 let healingEnabled = true;
+let qaEnabled = true;
 let launchBlocked = false;
 const openConsoles = new Set();
 const userClosedConsoles = new Set();
@@ -141,6 +143,7 @@ function agentStage(status) {
   if (normalized === "complete") return "committed";
   if (normalized === "conflict") return "needs master";
   if (normalized === "healing") return "repairing";
+  if (normalized === "testing") return "qa testing";
   if (normalized === "failed") return "failed";
   if (normalized === "stopped") return "stopped";
   return "queued";
@@ -406,7 +409,7 @@ function renderAgents(agents) {
   latestAgents = agents || [];
   announceAgentStatusChanges(latestAgents);
   agentsEl.innerHTML = "";
-  const active = latestAgents.filter((agent) => ["starting", "running", "healing"].includes(agent.status)).length;
+  const active = latestAgents.filter((agent) => ["starting", "running", "healing", "testing"].includes(agent.status)).length;
   agentCount.textContent = `${active} active`;
   if (!latestAgents.length) {
     agentsEl.innerHTML = '<div class="agent subtle">No workers launched.</div>';
@@ -540,7 +543,7 @@ function renderConsoleDeck(agents) {
   // Auto-open a console for each freshly active agent the user has not closed.
   roster.forEach((agent) => {
     if (
-      ["starting", "running", "healing"].includes(agent.status) &&
+      ["starting", "running", "healing", "testing"].includes(agent.status) &&
       !openConsoles.has(agent.id) &&
       !userClosedConsoles.has(agent.id)
     ) {
@@ -730,7 +733,7 @@ function renderHealing(healing, agents) {
   const activeHealers = healers.filter((agent) => ["starting", "running"].includes(agent.status)).length;
   const healed = roster.filter((agent) => agent.healed).length;
   const watching = roster.filter(
-    (agent) => agent.kind !== "healer" && ["starting", "running", "healing"].includes(agent.status),
+    (agent) => agent.kind !== "healer" && ["starting", "running", "healing", "testing"].includes(agent.status),
   ).length;
   if (healToggle) {
     healToggle.textContent = healingEnabled ? "Auto-Repair: On" : "Auto-Repair: Off";
@@ -774,6 +777,7 @@ function taskStatusLabel(status) {
     todo: "to do",
     in_progress: "in progress",
     healing: "being repaired",
+    testing: "in QA",
     done: "done",
     failed: "failed",
   };
@@ -859,6 +863,33 @@ async function toggleHealing() {
   }
 }
 
+function renderQA(qa, agents) {
+  qaEnabled = !(qa && qa.enabled === false);
+  const qaAgents = (agents || []).filter((agent) => agent.kind === "qa");
+  const activeQa = qaAgents.filter((agent) => ["starting", "running"].includes(agent.status)).length;
+  if (qaToggle) {
+    qaToggle.textContent = activeQa ? `QA Check: ${activeQa} running` : qaEnabled ? "QA Check: On" : "QA Check: Off";
+    qaToggle.classList.toggle("primary", qaEnabled);
+    qaToggle.classList.toggle("danger", !qaEnabled);
+  }
+}
+
+async function toggleQa() {
+  setBusy(true, "Updating QA");
+  try {
+    const next = !qaEnabled;
+    const state = await api("/api/qa/toggle", {
+      method: "POST",
+      body: JSON.stringify({ enabled: next }),
+    });
+    renderQA(state.qa, state.agents || latestAgents);
+    renderApcall(state.apcall || latestApcall);
+    speak(next ? "QA verification on. Agents will be checked after they finish." : "QA verification off.");
+  } finally {
+    setBusy(false);
+  }
+}
+
 async function healAgent(id) {
   setBusy(true, "Dispatching healer");
   speak(`Dispatching self healing agent to ${id}.`, true);
@@ -891,7 +922,8 @@ function activeAgentCount() {
   return (
     Number(summary.running || 0) +
     Number(summary.starting || 0) +
-    Number(summary.healing || 0)
+    Number(summary.healing || 0) +
+    Number(summary.testing || 0)
   );
 }
 
@@ -1002,6 +1034,7 @@ function renderAll(state) {
   renderEvents(state.events || []);
   renderApcall(state.apcall || []);
   renderHealing(state.healing, state.agents || []);
+  renderQA(state.qa, state.agents || []);
   renderWhiteboard(state.whiteboard);
   renderConsoleDeck(state.agents || []);
   renderLiveActivity(state);
@@ -1337,7 +1370,7 @@ agentLimit.addEventListener("input", () => {
 launchButton.addEventListener("click", () => mainAction().catch((error) => alert(error.message)));
 wbActionButton.addEventListener("click", () => mainAction().catch((error) => alert(error.message)));
 consolesButton.addEventListener("click", () => {
-  const running = latestAgents.filter((agent) => ["starting", "running", "healing", "failed", "conflict"].includes(agent.status));
+  const running = latestAgents.filter((agent) => ["starting", "running", "healing", "testing", "failed", "conflict"].includes(agent.status));
   if (!running.length) {
     alert("No agents to show. Launch the swarm first.");
     return;
@@ -1352,6 +1385,7 @@ removeServiceButton.addEventListener("click", () => removeService().catch((error
 talkBackButton.addEventListener("click", () => setTalkBack(!talkBackEnabled));
 settingsButton.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
 healToggle.addEventListener("click", () => toggleHealing().catch((error) => alert(error.message)));
+qaToggle.addEventListener("click", () => toggleQa().catch((error) => alert(error.message)));
 closeWhiteboard.addEventListener("click", () => closeWhiteboardModal());
 wbNoteButton.addEventListener("click", () => postWhiteboardNote().catch((error) => alert(error.message)));
 wbNoteInput.addEventListener("keydown", (event) => {

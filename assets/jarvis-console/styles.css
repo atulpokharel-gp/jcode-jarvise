@@ -2001,3 +2001,35 @@ button.primary::after {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
+
+/* ============================================================
+   v4: QA verification status
+   ============================================================ */
+:root {
+  --qa: #7cc7ff;
+}
+
+.status-testing {
+  color: var(--qa);
+  text-shadow: 0 0 14px rgba(124, 199, 255, 0.42);
+}
+
+.wb-task.wb-testing {
+  border-left-color: var(--qa);
+  box-shadow: 0 0 22px rgba(124, 199, 255, 0.12);
+}
+
+.army-testing {
+  border-color: rgba(124, 199, 255, 0.55);
+  box-shadow: 0 0 22px rgba(124, 199, 255, 0.14), inset 0 0 22px rgba(124, 199, 255, 0.08);
+}
+
+.live-console.lc-testing {
+  border-color: rgba(124, 199, 255, 0.6);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(124, 199, 255, 0.14);
+}
+
+.lc-testing .lc-dot {
+  background: var(--qa);
+  box-shadow: 0 0 10px rgba(124, 199, 255, 0.8);
+}

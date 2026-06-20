@@ -138,6 +138,28 @@ pickup. Auto-repair can be armed/muted from the **Repair Agent** panel, and a
 manual dispatch-healer control is available inside any failed or conflicted
 worker's live console.
 
+## QA Verification & Browser Testing
+
+After a worker finishes its task, the master allocates a **QA agent** to verify
+it actually works before the branch is considered done:
+
+- The QA agent runs inside the worker's own worktree and branch. It builds and
+  runs the project's tests, and for web/UI work it drives jcode's built-in
+  `browser` tool (open, snapshot, click, type, screenshot) to confirm the app
+  renders and behaves. Run `jcode browser setup` once so the Firefox bridge is
+  ready.
+- The QA agent ends with a machine-readable verdict line — `QA_VERDICT: PASS`
+  or `QA_VERDICT: FAIL - <reason>` — which the console reads to decide pass/fail
+  (falling back to the process exit code if no verdict line is present).
+- On **pass**, the task is marked done. On **fail**, the master reassigns the
+  work back to the same agent (its own branch) to fix, then re-runs QA — a
+  verify → repair → verify loop bounded by `QA_MAX_ATTEMPTS` (2).
+
+QA can be armed or muted from the **QA Check** button next to auto-repair, and
+workers may also use the `browser` tool to sanity-check their own UI while
+building. QA dispatches and verdicts flow over apcall (`qa.dispatch`, `qa.pass`,
+`qa.fail`, `qa.giveup`).
+
 ## Voice
 
 Voice input uses the browser Web Speech API when available. Useful phrases:
