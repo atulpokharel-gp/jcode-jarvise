@@ -1,6 +1,6 @@
 <div align="center">
 
-# jcode
+# jcode-jarvise Multi jcode agent
 
 [![Latest Release](https://badgen.net/github/release/1jehuang/jcode?icon=github)](https://github.com/1jehuang/jcode/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
