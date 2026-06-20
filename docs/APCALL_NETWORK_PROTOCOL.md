@@ -1,7 +1,8 @@
 # apcall Network Protocol
 
-Status: design draft for moving Jarvis apcall from a local state bus to a
-network-capable agent communication protocol.
+Status: HTTP read/ingest transport and the append-only session log are
+implemented in `scripts/jarvis_console.py`. The WebSocket stream, node
+handshake, acknowledgements, and auth remain on the roadmap.
 
 `apcall` means **Agent Protocol Call**. In the current Jarvis console it is a
 local persisted message bus stored in `.jcode/jarvis-console/state.json`. This
@@ -430,14 +431,37 @@ gradually adds a real stream endpoint.
 
 ## Minimal Implementation Plan
 
-1. Add an append-only `apcall.ndjson` writer alongside `state.json`.
-2. Add `GET /apcall/v1/sessions/{session_id}/messages`.
-3. Add `POST /apcall/v1/sessions/{session_id}/messages`.
-4. Add WebSocket stream endpoint.
-5. Add `node.join`, `ack`, `nack`, heartbeat, and replay.
-6. Add per-session token auth for non-localhost access.
-7. Move worker/healer launchers to connect as apcall nodes.
-8. Keep the dashboard as an observer node.
+- [x] Add an append-only `apcall.ndjson` writer alongside `state.json`.
+- [x] Add `GET /apcall/v1/sessions/{session_id}/messages` (replay).
+- [x] Add `POST /apcall/v1/sessions/{session_id}/messages` (ingest).
+- [x] Add `GET /apcall/v1/sessions` and `GET /apcall/v1/session`.
+- [ ] Add WebSocket stream endpoint.
+- [ ] Add `node.join`, `ack`, `nack`, heartbeat, and replay handshake.
+- [ ] Add per-session token auth for non-localhost access.
+- [ ] Move worker/healer launchers to connect as apcall nodes.
+- [ ] Keep the dashboard as an observer node.
 
 This keeps the current Jarvis behavior working while turning apcall into a real
 network protocol for distributed agent teams.
+
+## Implementation Status
+
+The HTTP fallback transport and the append-only session log are live in
+`scripts/jarvis_console.py`:
+
+- Every published apcall message is assigned a per-session `seq` and mirrored
+  into `.jcode/jarvis-console/sessions/<session_id>/apcall.ndjson` as a full
+  network envelope (`apc_version`, `session_id`, `mission_id`, `seq`, `ts`,
+  `from`/`to`, `payload`).
+- A fresh session + `mission_id` is opened at the start of each plan or launch.
+- Live endpoints:
+  - `GET /apcall/v1/session` — current session and mission ids.
+  - `GET /apcall/v1/sessions` — list sessions that have a log.
+  - `GET /apcall/v1/sessions/{session_id}/messages?after={id}&limit={n}` —
+    replay the session log, optionally after a given message id.
+  - `POST /apcall/v1/sessions/{session_id}/messages` — ingest a message from an
+    external node; it is appended to the log and reflected on the live bus.
+
+Still unbuilt from the design above: the WSS stream, `node.join`/`ack`/`nack`
+handshake, heartbeats as a transport feature, capability tokens, and signing.
+These are the next milestones before remote (non-localhost) operation.

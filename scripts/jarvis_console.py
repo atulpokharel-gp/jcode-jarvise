@@ -17,7 +17,7 @@ import shutil
 import subprocess
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
@@ -31,6 +31,7 @@ STATE_FILE = STATE_DIR / "state.json"
 SETTINGS_FILE = STATE_DIR / "settings.json"
 WORKTREE_ROOT = STATE_DIR / "worktrees"
 LOG_DIR = STATE_DIR / "logs"
+SESSIONS_DIR = STATE_DIR / "sessions"
 PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 STATE_LOCK = threading.Lock()
 DEFAULT_HOST = "127.0.0.1"
@@ -41,10 +42,151 @@ HEAL_MAX_ATTEMPTS = 2
 # planning broadcast, and self-heal handshake is published as an apcall message
 # so the console can show agents coordinating with each other in real time.
 APCALL_HEAL_BUS = "apcall://heal"
+# apcall-net: the on-disk, network-capable form of the bus. Every published
+# message is also written to an append-only NDJSON session log and exposed over
+# the /apcall/v1 HTTP transport described in docs/APCALL_NETWORK_PROTOCOL.md.
+APC_VERSION = "apcall/1.0"
+APCALL_BUSES = {
+    "apcall://master",
+    "apcall://workers",
+    "apcall://heal",
+    "apcall://whiteboard",
+    "apcall://observers",
+    "apcall://all",
+}
 
 
 def now() -> str:
     return datetime.now().strftime("%H:%M:%S")
+
+
+def iso_now() -> str:
+    return datetime.now(timezone.utc).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+
+
+def ensure_session(state: dict[str, Any]) -> str:
+    """Every apcall message belongs to a session; create one lazily."""
+    if not state.get("session_id"):
+        stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+        state["session_id"] = f"ses_{stamp}"
+    return str(state["session_id"])
+
+
+def start_session(state: dict[str, Any]) -> str:
+    """Open a fresh apcall session + mission for a new run (new NDJSON log)."""
+    stamp = datetime.now().strftime("%Y%m%d%H%M%S")
+    state["session_id"] = f"ses_{stamp}"
+    state["mission_id"] = f"mis_{stamp}"
+    state["apcall_seq"] = 0
+    return str(state["session_id"])
+
+
+def to_envelope(state: dict[str, Any], message: dict[str, Any]) -> dict[str, Any]:
+    """Project a local bus message into the apcall network envelope."""
+    receiver = str(message.get("to") or "")
+    if receiver.startswith("apcall://") or receiver in APCALL_BUSES:
+        to_field: dict[str, Any] = {"bus": receiver}
+    elif receiver in {"all", "workers", "whiteboard", "observers"}:
+        # Broadcast-style short names map onto the reserved apcall buses.
+        to_field = {"bus": f"apcall://{receiver}"}
+    else:
+        to_field = {"node_id": receiver}
+    return {
+        "apc_version": APC_VERSION,
+        "id": message["id"],
+        "session_id": state.get("session_id"),
+        "mission_id": state.get("mission_id"),
+        "seq": message.get("seq"),
+        "from": {"node_id": str(message.get("from") or "")},
+        "to": to_field,
+        "type": message.get("type"),
+        "ts": iso_now(),
+        "payload": message.get("payload", {}),
+    }
+
+
+def append_session_log(session_id: str | None, envelope: dict[str, Any]) -> None:
+    """Append one message to the append-only NDJSON session log (source of truth)."""
+    if not session_id:
+        return
+    session_dir = SESSIONS_DIR / session_id
+    session_dir.mkdir(parents=True, exist_ok=True)
+    with (session_dir / "apcall.ndjson").open("a", encoding="utf-8") as handle:
+        handle.write(json.dumps(envelope) + "\n")
+
+
+def read_session_messages(session_id: str, after: str | None = None, limit: int = 200) -> dict[str, Any]:
+    """Replay messages from a session log, optionally after a given message id."""
+    path = SESSIONS_DIR / session_id / "apcall.ndjson"
+    if not path.exists():
+        return {"session_id": session_id, "messages": [], "count": 0}
+    messages: list[dict[str, Any]] = []
+    started = after is None
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            envelope = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not started:
+            if envelope.get("id") == after:
+                started = True
+            continue
+        messages.append(envelope)
+    return {"session_id": session_id, "messages": messages[-limit:], "count": len(messages)}
+
+
+def list_sessions() -> dict[str, Any]:
+    if not SESSIONS_DIR.exists():
+        return {"sessions": []}
+    sessions = [
+        directory.name
+        for directory in sorted(SESSIONS_DIR.iterdir())
+        if directory.is_dir() and (directory / "apcall.ndjson").exists()
+    ]
+    return {"sessions": sessions}
+
+
+def ingest_message(session_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Accept an apcall message from an external node over the HTTP transport."""
+    message_type = str(body.get("type") or "").strip()
+    if not message_type:
+        raise RuntimeError("Missing message type.")
+    sender = body.get("from")
+    receiver = body.get("to")
+    sender_id = sender.get("node_id") if isinstance(sender, dict) else (sender or "external")
+    receiver_id = (
+        (receiver.get("node_id") or receiver.get("bus"))
+        if isinstance(receiver, dict)
+        else (receiver or "master")
+    )
+    payload = body.get("payload") if isinstance(body.get("payload"), dict) else {}
+    with STATE_LOCK:
+        state = load_state()
+        ensure_session(state)
+        seq = int(state.get("apcall_seq", 0)) + 1
+        state["apcall_seq"] = seq
+        stamp = datetime.now().strftime("%H%M%S%f")
+        message = {
+            "id": f"apc-ext-{stamp}-{seq}",
+            "time": now(),
+            "from": str(sender_id),
+            "to": str(receiver_id),
+            "type": message_type,
+            "payload": payload,
+            "seq": seq,
+        }
+        bus = state.setdefault("apcall", [])
+        bus.append(message)
+        state["apcall"] = bus[-APCALL_CAP:]
+        envelope = to_envelope(state, message)
+        envelope["session_id"] = session_id
+        append_session_log(session_id, envelope)
+        event(state, f"apcall ingest from {sender_id}: {message_type}")
+        save_state(state)
+    return {"accepted": True, "id": message["id"], "seq": seq}
 
 
 def apcall(
@@ -63,17 +205,26 @@ def apcall(
     so the browser can render the live mesh.
     """
     bus = state.setdefault("apcall", [])
+    ensure_session(state)
+    seq = int(state.get("apcall_seq", 0)) + 1
+    state["apcall_seq"] = seq
     stamp = datetime.now().strftime("%H%M%S%f")
     message = {
-        "id": f"apcall-{stamp}-{len(bus)}",
+        "id": f"apcall-{stamp}-{seq}",
         "time": now(),
         "from": sender,
         "to": receiver,
         "type": kind,
         "payload": payload or {},
+        "seq": seq,
     }
     bus.append(message)
     state["apcall"] = bus[-APCALL_CAP:]
+    # Mirror onto the append-only session log (apcall-net source of truth).
+    try:
+        append_session_log(state.get("session_id"), to_envelope(state, message))
+    except OSError:
+        pass
     if summary:
         event(state, summary)
     return message
@@ -94,6 +245,7 @@ def ensure_dirs() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
     WORKTREE_ROOT.mkdir(parents=True, exist_ok=True)
     LOG_DIR.mkdir(parents=True, exist_ok=True)
+    SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
 
 
 def default_state() -> dict[str, Any]:
@@ -1305,6 +1457,35 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    def handle_apcall_get(self, parsed: Any) -> None:
+        """apcall-net HTTP read transport: sessions list, current, and replay."""
+        if parsed.path == "/apcall/v1/sessions":
+            self.send_json(list_sessions())
+            return
+        if parsed.path == "/apcall/v1/session":
+            with STATE_LOCK:
+                state = load_state()
+            self.send_json(
+                {
+                    "apc_version": APC_VERSION,
+                    "session_id": state.get("session_id"),
+                    "mission_id": state.get("mission_id"),
+                }
+            )
+            return
+        match = re.match(r"^/apcall/v1/sessions/([^/]+)/messages$", parsed.path)
+        if match:
+            query = parse_qs(parsed.query)
+            after = query.get("after", [None])[0]
+            try:
+                limit = int(query.get("limit", ["200"])[0] or 200)
+            except ValueError:
+                limit = 200
+            limit = max(1, min(1000, limit))
+            self.send_json(read_session_messages(match.group(1), after=after, limit=limit))
+            return
+        self.send_json({"error": "Unknown apcall route"}, status=404)
+
     def do_GET(self) -> None:  # noqa: N802
         try:
             parsed = urlparse(self.path)
@@ -1327,6 +1508,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/workspace/list":
                 raw_path = parse_qs(parsed.query).get("path", [""])[0]
                 self.send_json(list_workspace_path(raw_path or None))
+                return
+            if parsed.path.startswith("/apcall/v1"):
+                self.handle_apcall_get(parsed)
                 return
             route = "index.html" if parsed.path == "/" else parsed.path.lstrip("/")
             path = (ASSET_DIR / route).resolve()
@@ -1362,6 +1546,7 @@ class Handler(BaseHTTPRequestHandler):
                 max_agents = max(1, min(12, max_agents))
                 with STATE_LOCK:
                     state = load_state()
+                    start_session(state)
                     plan = choose_plan(task, max_agents=max_agents)
                     state["plan"] = plan
                     state["plan_preview"] = True
@@ -1394,6 +1579,7 @@ class Handler(BaseHTTPRequestHandler):
                 plan = clean_plan(body.get("plan")) or choose_plan(task, max_agents=max_agents)
                 with STATE_LOCK:
                     state = load_state()
+                    start_session(state)
                     state["plan"] = plan
                     state["plan_preview"] = True
                     state["whiteboard"] = build_whiteboard(task, plan)
@@ -1455,7 +1641,11 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/service/remove":
                 self.send_json(remove_service())
                 return
-            self.send_error(404)
+            ingest = re.match(r"^/apcall/v1/sessions/([^/]+)/messages$", urlparse(self.path).path)
+            if ingest:
+                self.send_json(ingest_message(ingest.group(1), body))
+                return
+            self.send_json({"error": "Unknown route"}, status=404)
         except Exception as exc:  # Keep UI errors readable.
             self.send_json({"error": str(exc)}, status=400)
 
