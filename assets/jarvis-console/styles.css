@@ -238,6 +238,8 @@ h2 {
 .status-grid article,
 .metric-grid article,
 .workspace-grid article,
+.army-panel,
+.army-node,
 .plan-item,
 .agent,
 .event,
@@ -265,6 +267,8 @@ h2 {
 .voice-panel::before,
 .metric-grid article::before,
 .workspace-grid article::before,
+.army-panel::before,
+.army-node::before,
 .plan-item::before,
 .agent::before,
 .detail-card::before,
@@ -420,6 +424,108 @@ input[type="range"] {
   grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   gap: 16px;
   margin-bottom: 18px;
+}
+
+.army-panel {
+  padding: 16px;
+  margin-bottom: 18px;
+  overflow: hidden;
+}
+
+.army-board {
+  display: grid;
+  grid-template-columns: 1.1fr repeat(3, minmax(0, 1fr));
+  gap: 12px;
+  margin-top: 14px;
+}
+
+.army-node {
+  min-height: 152px;
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 13px;
+  overflow: hidden;
+}
+
+.army-node::after {
+  content: "";
+  position: absolute;
+  inset: auto -30% -26px -30%;
+  height: 44px;
+  background: radial-gradient(ellipse, rgba(78, 231, 255, 0.2), transparent 72%);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.master-node {
+  grid-row: span 2;
+  min-height: 316px;
+  background:
+    linear-gradient(160deg, rgba(82, 255, 184, 0.12), transparent 36%),
+    linear-gradient(180deg, rgba(12, 33, 43, 0.94), rgba(4, 12, 21, 0.96));
+}
+
+.node-type {
+  color: var(--cyan);
+  font-size: 11px;
+  font-weight: 900;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.army-node strong {
+  color: #f5fdff;
+  line-height: 1.25;
+}
+
+.army-node small {
+  color: var(--muted);
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.node-pulse {
+  justify-self: start;
+  margin-top: 3px;
+  border: 1px solid rgba(78, 231, 255, 0.28);
+  border-radius: 999px;
+  padding: 4px 8px;
+  background: rgba(78, 231, 255, 0.06);
+  font-size: 11px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+
+.army-running,
+.army-starting {
+  border-color: rgba(78, 231, 255, 0.54);
+  box-shadow:
+    0 0 26px rgba(78, 231, 255, 0.12),
+    inset 0 0 24px rgba(78, 231, 255, 0.07);
+}
+
+.army-running::after,
+.army-starting::after {
+  animation: dataSweep 1.5s infinite linear;
+}
+
+.army-complete {
+  border-color: rgba(82, 255, 184, 0.46);
+}
+
+.army-conflict,
+.army-failed {
+  border-color: rgba(255, 95, 121, 0.58);
+}
+
+@keyframes dataSweep {
+  from {
+    transform: translateX(-24%);
+  }
+  to {
+    transform: translateX(24%);
+  }
 }
 
 .metric-grid {
@@ -722,8 +828,13 @@ pre {
   }
 
   .agents,
+  .army-board,
   .provider-settings {
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .master-node {
+    grid-row: span 1;
   }
 }
 
@@ -739,6 +850,7 @@ pre {
   .workspace-grid,
   .metric-grid,
   .agents,
+  .army-board,
   .inspector-body,
   .planner-controls,
   .provider-settings,

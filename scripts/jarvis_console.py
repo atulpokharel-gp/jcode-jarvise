@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -32,6 +33,8 @@ WORKTREE_ROOT = STATE_DIR / "worktrees"
 LOG_DIR = STATE_DIR / "logs"
 PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 STATE_LOCK = threading.Lock()
+DEFAULT_HOST = "127.0.0.1"
+DEFAULT_PORT = 8765
 
 
 def now() -> str:
@@ -56,7 +59,7 @@ def ensure_dirs() -> None:
 
 
 def default_state() -> dict[str, Any]:
-    return {"plan": [], "agents": [], "events": []}
+    return {"plan": [], "plan_preview": False, "agents": [], "events": []}
 
 
 def default_settings() -> dict[str, Any]:
@@ -290,7 +293,85 @@ def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
         state["jcode_path"] = str(exc)
         state["jcode_available"] = False
     state["settings"] = settings_summary()
+    state["service"] = service_status()
     return state
+
+
+def service_target_path() -> Path:
+    if os.name == "nt":
+        appdata = os.environ.get("APPDATA")
+        if not appdata:
+            raise RuntimeError("APPDATA is not set, so Windows startup cannot be configured.")
+        return (
+            Path(appdata)
+            / "Microsoft"
+            / "Windows"
+            / "Start Menu"
+            / "Programs"
+            / "Startup"
+            / "jcode-jarvis-console.cmd"
+        )
+    return Path.home() / ".config" / "autostart" / "jcode-jarvis-console.desktop"
+
+
+def service_command_preview() -> str:
+    script = ROOT / "scripts" / "jarvis_console.py"
+    return f"{sys.executable} {script} --host {DEFAULT_HOST} --port {DEFAULT_PORT}"
+
+
+def service_file_contents() -> str:
+    script = ROOT / "scripts" / "jarvis_console.py"
+    if os.name == "nt":
+        return (
+            "@echo off\n"
+            f'cd /d "{ROOT}"\n'
+            f'start "Jcode Jarvis Console" /min "{sys.executable}" "{script}" '
+            f"--host {DEFAULT_HOST} --port {DEFAULT_PORT}\n"
+        )
+    return (
+        "[Desktop Entry]\n"
+        "Type=Application\n"
+        "Name=Jcode Jarvis Console\n"
+        f"Exec={shlex.quote(sys.executable)} {shlex.quote(str(script))} "
+        f"--host {DEFAULT_HOST} --port {DEFAULT_PORT}\n"
+        "Terminal=false\n"
+        "X-GNOME-Autostart-enabled=true\n"
+    )
+
+
+def service_status() -> dict[str, Any]:
+    try:
+        path = service_target_path()
+        return {
+            "supported": True,
+            "installed": path.exists(),
+            "path": str(path),
+            "command": service_command_preview(),
+        }
+    except RuntimeError as exc:
+        return {"supported": False, "installed": False, "path": "", "command": "", "error": str(exc)}
+
+
+def install_service() -> dict[str, Any]:
+    path = service_target_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(service_file_contents(), encoding="utf-8")
+    if os.name != "nt":
+        path.chmod(0o755)
+    state = load_state()
+    event(state, f"Auto-run service installed at {path}")
+    save_state(state)
+    return hydrate_state(state)
+
+
+def remove_service() -> dict[str, Any]:
+    path = service_target_path()
+    if path.exists():
+        path.unlink()
+    state = load_state()
+    event(state, "Auto-run service removed.")
+    save_state(state)
+    return hydrate_state(state)
 
 
 def settings_summary() -> dict[str, Any]:
@@ -424,7 +505,7 @@ def create_workspace(parent_raw: str, name: str, init_git: bool = True) -> dict[
     return set_workspace(str(target))
 
 
-def clean_plan(plan: Any, max_agents: int = 5) -> list[dict[str, str]]:
+def clean_plan(plan: Any, max_agents: int = 12) -> list[dict[str, str]]:
     if not isinstance(plan, list):
         return []
     cleaned: list[dict[str, str]] = []
@@ -452,13 +533,15 @@ def provider_ready(provider: dict[str, Any]) -> bool:
 
 def tier_for_role(role: str, strategy: str) -> str:
     lowered = role.lower()
+    premium_words = ["orchestration", "git", "master", "architecture", "security"]
+    balanced_words = ["verification", "database", "backend", "qa", "runner", "integration"]
     if strategy == "cost_saver":
-        return "balanced" if any(word in lowered for word in ["orchestration", "git"]) else "economy"
+        return "balanced" if any(word in lowered for word in premium_words) else "economy"
     if strategy == "quality":
-        return "premium" if any(word in lowered for word in ["orchestration", "git", "verification"]) else "balanced"
-    if any(word in lowered for word in ["orchestration", "git"]):
+        return "premium" if any(word in lowered for word in [*premium_words, "verification"]) else "balanced"
+    if any(word in lowered for word in premium_words):
         return "premium"
-    if "verification" in lowered:
+    if any(word in lowered for word in balanced_words):
         return "balanced"
     return "economy"
 
@@ -563,19 +646,46 @@ def poll_processes(state: dict[str, Any]) -> None:
         save_state(state)
 
 
-def choose_plan(task: str, max_agents: int = 5) -> list[dict[str, str]]:
+def choose_plan(task: str, max_agents: int = 12) -> list[dict[str, str]]:
     lowered = task.lower()
-    broad_markers = ["frontend", "backend", "api", "tests", "docs", "git", "merge", "ui"]
+    requested = re.search(r"\b(\d{1,2})\s+(?:agents|workers|engineers)\b", lowered)
+    broad_markers = [
+        "frontend",
+        "backend",
+        "api",
+        "tests",
+        "docs",
+        "git",
+        "merge",
+        "ui",
+        "database",
+        "security",
+        "customer",
+        "architecture",
+    ]
     score = sum(1 for marker in broad_markers if marker in lowered)
     if len(task) > 600:
         score += 2
-    count = max(1, min(max_agents, score or 2))
+    if requested:
+        count = int(requested.group(1))
+    elif any(word in lowered for word in ["army", "company", "full team", "whole team", "jarvis"]):
+        count = 10
+    else:
+        count = max(3, score or 4)
+    count = max(1, min(max_agents, count))
     roles = [
-        ("UI Agent", "Build the user-facing console, controls, and visual states."),
-        ("Orchestration Agent", "Implement worker launch, lifecycle tracking, and logs."),
-        ("Git Agent", "Keep branch/worktree state clean and prepare merge notes."),
-        ("Verification Agent", "Run focused checks and report failures clearly."),
-        ("Polish Agent", "Tighten docs, empty states, and operator ergonomics."),
+        ("Mission Architect", "Break the mission into rules, acceptance criteria, and safe worker boundaries."),
+        ("UX Systems Agent", "Design the screen flow, visual hierarchy, controls, and empty/loading/error states."),
+        ("Frontend Engineer", "Build the user-facing UI, dashboard states, and responsive interactions."),
+        ("Backend Orchestration Agent", "Implement worker launch, lifecycle tracking, service controls, and logs."),
+        ("Security Review Agent", "Threat-model secrets, command execution, file access, and unsafe workflows."),
+        ("Database Schema Agent", "Plan data models, persistence, migrations, and rollback notes when storage is needed."),
+        ("Customer Advocate A", "Review the feature as a first-time user and list missing workflow expectations."),
+        ("Customer Advocate B", "Review the feature as a power user and list speed, control, and visibility gaps."),
+        ("QA Runner Agent", "Run focused checks, reproduce failures, and report exact commands and errors."),
+        ("Git Integration Agent", "Keep branch/worktree state clean, verify commits, and prepare merge notes."),
+        ("Docs Navigator Agent", "Document what was built, how to navigate it, and remaining risks."),
+        ("Polish Agent", "Tighten microcopy, accessibility, spacing, and operator ergonomics."),
     ]
     return [
         {
@@ -666,6 +776,7 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
             new_agents.append(agent)
             event(state, f"{agent_id} launched on {branch} with {provider_label}/{model_label}")
         state["plan"] = plan
+        state["plan_preview"] = False
         state.setdefault("agents", []).extend(new_agents)
         save_state(state)
         return hydrate_state(state)
@@ -781,6 +892,9 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path == "/api/settings":
                 self.send_json(load_settings(include_secrets=False))
                 return
+            if parsed.path == "/api/service/status":
+                self.send_json(service_status())
+                return
             if parsed.path == "/api/workspace/list":
                 raw_path = parse_qs(parsed.query).get("path", [""])[0]
                 self.send_json(list_workspace_path(raw_path or None))
@@ -816,11 +930,12 @@ class Handler(BaseHTTPRequestHandler):
                 if not task:
                     raise RuntimeError("Mission is empty.")
                 max_agents = int(body.get("max_agents") or 5)
-                max_agents = max(1, min(5, max_agents))
+                max_agents = max(1, min(12, max_agents))
                 with STATE_LOCK:
                     state = load_state()
                     plan = choose_plan(task, max_agents=max_agents)
                     state["plan"] = plan
+                    state["plan_preview"] = True
                     event(state, f"Master planned {len(plan)} worker scope(s).")
                     save_state(state)
                     self.send_json(hydrate_state(state))
@@ -856,6 +971,12 @@ class Handler(BaseHTTPRequestHandler):
                 init_git = bool(body.get("init_git", True))
                 self.send_json(create_workspace(parent, name, init_git))
                 return
+            if self.path == "/api/service/install":
+                self.send_json(install_service())
+                return
+            if self.path == "/api/service/remove":
+                self.send_json(remove_service())
+                return
             self.send_error(404)
         except Exception as exc:  # Keep UI errors readable.
             self.send_json({"error": str(exc)}, status=400)
@@ -866,8 +987,8 @@ class Handler(BaseHTTPRequestHandler):
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run the local Jcode Jarvis console.")
-    parser.add_argument("--host", default="127.0.0.1")
-    parser.add_argument("--port", type=int, default=8765)
+    parser.add_argument("--host", default=DEFAULT_HOST)
+    parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     args = parser.parse_args()
     ensure_dirs()
     server = ThreadingHTTPServer((args.host, args.port), Handler)

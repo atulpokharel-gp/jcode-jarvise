@@ -33,6 +33,10 @@ const backendStatus = document.querySelector("#backendStatus");
 const backendJcode = document.querySelector("#backendJcode");
 const backendWorkspace = document.querySelector("#backendWorkspace");
 const backendGit = document.querySelector("#backendGit");
+const serviceStatus = document.querySelector("#serviceStatus");
+const servicePath = document.querySelector("#servicePath");
+const installServiceButton = document.querySelector("#installServiceButton");
+const removeServiceButton = document.querySelector("#removeServiceButton");
 const workspacePath = document.querySelector("#workspacePath");
 const openWorkspaceButton = document.querySelector("#openWorkspaceButton");
 const setWorkspaceButton = document.querySelector("#setWorkspaceButton");
@@ -40,9 +44,13 @@ const newProjectParent = document.querySelector("#newProjectParent");
 const newProjectName = document.querySelector("#newProjectName");
 const createProjectButton = document.querySelector("#createProjectButton");
 const folderList = document.querySelector("#folderList");
+const armyBoard = document.querySelector("#armyBoard");
+const armySummary = document.querySelector("#armySummary");
 
 let currentPlan = [];
 let latestAgents = [];
+let latestSummary = {};
+let latestPlanPreview = false;
 let selectedAgentId = "";
 let currentSettings;
 let currentWorkspacePath = "";
@@ -75,6 +83,16 @@ function escapeHtml(value) {
 
 function statusClass(status) {
   return `status-${String(status || "planned").toLowerCase()}`;
+}
+
+function agentStage(status) {
+  const normalized = String(status || "planned").toLowerCase();
+  if (["running", "starting"].includes(normalized)) return "executing";
+  if (normalized === "complete") return "committed";
+  if (normalized === "conflict") return "needs master";
+  if (normalized === "failed") return "failed";
+  if (normalized === "stopped") return "stopped";
+  return "queued";
 }
 
 function appendMissionText(text) {
@@ -122,6 +140,7 @@ function gatherPlanFromDom() {
 
 function renderMetrics(state) {
   const summary = state.summary || {};
+  latestSummary = summary;
   const workspace = state.workspace || {};
   currentWorkspacePath = workspace.path || "";
   metricWorkspace.textContent = currentWorkspacePath ? currentWorkspacePath.split(/[\\/]/).pop() : "-";
@@ -147,6 +166,7 @@ function renderMetrics(state) {
   backendJcode.textContent = state.jcode_path || "-";
   backendWorkspace.textContent = workspace.path || "-";
   backendGit.textContent = workspace.is_git_repo ? `${workspace.branch} / ${workspace.dirty ? "dirty" : "clean"}` : "not a git repo";
+  renderService(state.service || {});
   if (document.activeElement !== workspacePath) {
     workspacePath.value = workspace.path || "";
   }
@@ -155,11 +175,76 @@ function renderMetrics(state) {
   }
 }
 
+function renderService(service) {
+  if (!serviceStatus || !servicePath) return;
+  if (!service.supported) {
+    serviceStatus.textContent = service.error || "not supported";
+    serviceStatus.className = "status-failed";
+    servicePath.textContent = "-";
+    installServiceButton.disabled = true;
+    removeServiceButton.disabled = true;
+    return;
+  }
+  serviceStatus.textContent = service.installed ? "installed" : "not installed";
+  serviceStatus.className = service.installed ? "status-complete" : "status-planned";
+  servicePath.textContent = service.path || "-";
+  installServiceButton.disabled = service.installed;
+  removeServiceButton.disabled = !service.installed;
+}
+
+function renderArmy() {
+  if (!armyBoard || !armySummary) return;
+  const plannedNodes = currentPlan.map((item, index) => ({
+    ...item,
+    id: `planned-${index + 1}`,
+    status: "planned",
+  }));
+  const recentAgents = latestAgents.slice(-12);
+  const nodes = latestPlanPreview && plannedNodes.length ? plannedNodes : recentAgents.length ? recentAgents : plannedNodes;
+  const active = nodes.filter((agent) => ["starting", "running"].includes(agent.status)).length;
+  const complete = latestSummary.complete || nodes.filter((agent) => agent.status === "complete").length;
+  const conflict = latestSummary.conflict || nodes.filter((agent) => agent.status === "conflict").length;
+  armySummary.textContent = `${nodes.length} workers / ${active} active / ${complete} done`;
+  armySummary.className = `badge ${conflict ? "status-conflict" : active ? "status-running" : complete ? "status-complete" : ""}`;
+  const masterStatus = conflict ? "conflict" : active ? "running" : complete ? "complete" : "planned";
+  armyBoard.innerHTML = `
+    <article class="army-node master-node army-${escapeHtml(masterStatus)}">
+      <span class="node-type">Master Jcode</span>
+      <strong>Rules, routing, merge control</strong>
+      <small>Plans the team, watches git, merges completed branches, and stops on conflicts.</small>
+      <small class="${statusClass(masterStatus)}">stage: ${escapeHtml(agentStage(masterStatus))}</small>
+    </article>
+  `;
+  if (!nodes.length) {
+    armyBoard.insertAdjacentHTML(
+      "beforeend",
+      '<article class="army-node"><span class="node-type">Waiting</span><strong>No mission planned</strong><small>Dictate or type a task, then click Plan Agents.</small></article>',
+    );
+    return;
+  }
+  nodes.forEach((agent, index) => {
+    const status = String(agent.status || "planned").toLowerCase();
+    const route = agent.provider || agent.model ? `${agent.provider || "smart"}/${agent.model || "auto"}` : "smart route";
+    const node = document.createElement("article");
+    node.className = `army-node army-${status}`;
+    node.innerHTML = `
+      <span class="node-type">Unit ${index + 1}</span>
+      <strong>${escapeHtml(agent.role || "Worker Agent")}</strong>
+      <small>${escapeHtml(agentStage(status))}: ${escapeHtml(agent.task || "Awaiting scope.")}</small>
+      <small>model: ${escapeHtml(route)}</small>
+      <small>branch: ${escapeHtml(agent.branch || "pending")}</small>
+      <span class="node-pulse ${statusClass(status)}">${escapeHtml(status)}</span>
+    `;
+    armyBoard.appendChild(node);
+  });
+}
+
 function renderPlan(plan) {
   currentPlan = plan || [];
   planEl.innerHTML = "";
   if (!currentPlan.length) {
     planEl.innerHTML = '<div class="plan-item subtle">No plan yet.</div>';
+    renderArmy();
     return;
   }
   currentPlan.forEach((item, index) => {
@@ -176,6 +261,7 @@ function renderPlan(plan) {
     `;
     planEl.appendChild(node);
   });
+  renderArmy();
 }
 
 function renderAgents(agents) {
@@ -186,6 +272,7 @@ function renderAgents(agents) {
   if (!latestAgents.length) {
     agentsEl.innerHTML = '<div class="agent subtle">No workers launched.</div>';
     renderSelectedAgent();
+    renderArmy();
     return;
   }
   latestAgents.forEach((agent) => {
@@ -217,6 +304,7 @@ function renderAgents(agents) {
     selectedAgentId = latestAgents[0]?.id || "";
   }
   renderSelectedAgent();
+  renderArmy();
 }
 
 function renderSelectedAgent() {
@@ -270,6 +358,7 @@ async function refreshAgentLog() {
 
 async function refresh() {
   const state = await api("/api/status");
+  latestPlanPreview = Boolean(state.plan_preview);
   gitStatus.textContent = state.git_status || "Clean";
   renderMetrics(state);
   if (document.activeElement?.closest?.("#plan") !== planEl) {
@@ -414,6 +503,7 @@ async function planAgents() {
     method: "POST",
     body: JSON.stringify({ task, max_agents: Number(agentLimit.value) }),
   });
+  latestPlanPreview = Boolean(response.plan_preview);
   renderPlan(response.plan);
   renderEvents(response.events || []);
   renderMetrics(response);
@@ -436,6 +526,16 @@ async function startWorkers() {
 async function mergeFinished() {
   if (!confirm("Merge completed agent branches into the current branch?")) return;
   await api("/api/merge", { method: "POST", body: "{}" });
+  await refresh();
+}
+
+async function installService() {
+  await api("/api/service/install", { method: "POST", body: "{}" });
+  await refresh();
+}
+
+async function removeService() {
+  await api("/api/service/remove", { method: "POST", body: "{}" });
   await refresh();
 }
 
@@ -527,6 +627,8 @@ refreshButton.addEventListener("click", () => refresh().catch((error) => alert(e
 openWorkspaceButton.addEventListener("click", () => browseWorkspace().catch((error) => alert(error.message)));
 setWorkspaceButton.addEventListener("click", () => setWorkspace().catch((error) => alert(error.message)));
 createProjectButton.addEventListener("click", () => createProject().catch((error) => alert(error.message)));
+installServiceButton.addEventListener("click", () => installService().catch((error) => alert(error.message)));
+removeServiceButton.addEventListener("click", () => removeService().catch((error) => alert(error.message)));
 settingsButton.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
 closeSettings.addEventListener("click", () => {
   settingsModal.hidden = true;

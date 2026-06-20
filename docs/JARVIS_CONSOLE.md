@@ -27,6 +27,11 @@ http://127.0.0.1:8765
 - The folder browser can open directories, switch the active workspace, or
   create a new git-initialized project.
 - The console creates a small plan and decides how many worker scopes to use.
+- The agent limit can scale up to 12 workers for a fuller company-style team:
+  mission architect, UX, frontend, orchestration, security, database,
+  customer advocates, QA, git integration, docs, and polish.
+- The Agent Army map shows the master controller plus every planned or running
+  worker, including stage, model route, branch, and status.
 - The plan cards are editable before launch, so the master can change roles or
   scope text before workers start.
 - Worker launch requires a clean active workspace so every branch has a clear base.
@@ -52,6 +57,19 @@ Voice input uses the browser Web Speech API when available. Useful phrases:
 - `merge finished`
 
 Spoken text that is not a command is appended to the mission box.
+
+## Auto-run Service
+
+The backend control panel has **Create Auto-run Service** and **Remove Service**
+buttons. On Windows, this writes a startup command file here:
+
+```text
+%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\jcode-jarvis-console.cmd
+```
+
+That starts the local Jarvis console when the user signs in. The service button
+only creates or removes the startup entry; it does not install any system-wide
+daemon or store API keys outside the ignored Jarvis settings file.
 
 ## Worker Provider
 

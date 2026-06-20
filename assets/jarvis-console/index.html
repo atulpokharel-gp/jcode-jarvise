@@ -64,8 +64,8 @@
             <button id="mergeButton" class="danger">Merge Finished</button>
           </div>
           <div class="planner-controls">
-            <label for="agentLimit">Agent limit <span id="agentLimitValue">3</span></label>
-            <input id="agentLimit" type="range" min="1" max="5" value="3" />
+            <label for="agentLimit">Agent limit <span id="agentLimitValue">6</span></label>
+            <input id="agentLimit" type="range" min="1" max="12" value="6" />
             <span id="launchGate" class="gate">Checking git state...</span>
           </div>
         </div>
@@ -80,6 +80,7 @@
           <div class="quick-grid">
             <button data-template="Plan this task and deploy the right number of agents: ">Plan</button>
             <button data-template="Deploy three agents to work on: ">3 Agents</button>
+            <button data-template="Deploy a full company agent army to build: ">Army</button>
             <button data-template="Review and merge completed agent branches for: ">Merge</button>
           </div>
         </aside>
@@ -99,10 +100,14 @@
             <small>Jcode: <span id="backendJcode">-</span></small>
             <small>Project: <span id="backendWorkspace">-</span></small>
             <small>Git: <span id="backendGit">-</span></small>
+            <small>Auto-run: <span id="serviceStatus">checking</span></small>
+            <small>Service file: <span id="servicePath">-</span></small>
           </div>
           <div class="controls">
             <button id="openWorkspaceButton">Browse Workspace</button>
             <button id="setWorkspaceButton">Set Workspace</button>
+            <button id="installServiceButton">Create Auto-run Service</button>
+            <button id="removeServiceButton">Remove Service</button>
           </div>
           <input id="workspacePath" placeholder="C:\path\to\project" />
         </article>
@@ -123,6 +128,17 @@
           </div>
           <div id="folderList" class="folder-list"></div>
         </article>
+      </section>
+
+      <section class="army-panel" aria-label="Agent army live topology">
+        <div class="section-head compact">
+          <div>
+            <p class="eyebrow">Agent Army</p>
+            <h2>Master Command Map</h2>
+          </div>
+          <span id="armySummary" class="badge">standing by</span>
+        </div>
+        <div id="armyBoard" class="army-board"></div>
       </section>
 
       <section class="status-grid">
