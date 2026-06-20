@@ -43,6 +43,7 @@ python scripts/jarvis_console.py
 - **✅ QA + browser testing.** After a worker finishes, the master allocates a **QA agent** that builds, runs tests, and drives jcode's built‑in `browser` tool to confirm the UI actually works. On failure it reassigns the original agent and re‑verifies — a `verify → repair → verify` loop.
 - **🗜️ Token‑saving work orders.** The master holds the full concept; each worker only receives a **compact headline + its own scoped objective**, not the whole spec — like a manager who doesn't hand the entire roadmap to every developer.
 - **🔌 apcall protocol.** Agents coordinate over `apcall` (Agent Protocol Call), an inter‑agent message bus rendered live in the console, mirrored to an append‑only NDJSON session log, and exposed over a `/apcall/v1` HTTP transport for replay and external‑node ingest.
+- **🌐 Remote MCP bridge.** A token‑protected, DevSpace‑style MCP server (`/mcp`) lets a remote client — ChatGPT, Claude — securely read, edit, search, run, and git‑manage your allow‑listed local projects (and launch a swarm) over a tunnel you control. Disabled by default. See [Remote MCP Bridge](docs/REMOTE_MCP_BRIDGE.md).
 - **🧠 Smart model routing.** Workers are routed across OpenAI, Claude, and NVIDIA by a cost/quality strategy, with optional per‑agent provider/model overrides.
 - **🎙️ Voice control.** Optional browser speech input and spoken status replies (say "launch swarm", "merge finished", …).
 
@@ -144,6 +145,7 @@ Workers stay isolated in per‑agent worktrees under `.jcode/jarvis-console/`; t
 
 - [Jarvis Console — full guide](docs/JARVIS_CONSOLE.md)
 - [apcall Network Protocol](docs/APCALL_NETWORK_PROTOCOL.md)
+- [Remote MCP Bridge (DevSpace‑style)](docs/REMOTE_MCP_BRIDGE.md)
 - [Swarm Architecture](docs/SWARM_ARCHITECTURE.md)
 - [Memory Architecture](docs/MEMORY_ARCHITECTURE.md)
 - [Browser Provider Protocol](docs/BROWSER_PROVIDER_PROTOCOL.md)

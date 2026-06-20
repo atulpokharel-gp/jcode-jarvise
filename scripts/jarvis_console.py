@@ -12,6 +12,7 @@ import argparse
 import json
 import os
 import re
+import secrets
 import shlex
 import shutil
 import subprocess
@@ -268,6 +269,12 @@ def default_settings() -> dict[str, Any]:
     return {
         "strategy": "balanced",
         "workspace": {"path": str(ROOT)},
+        "devspace": {
+            "enabled": False,
+            "token": "",
+            "allowed_roots": [str(ROOT)],
+            "allow_shell": True,
+        },
         "providers": {
             "openai": {
                 "label": "OpenAI",
@@ -343,6 +350,10 @@ def load_settings(include_secrets: bool = False) -> dict[str, Any]:
         api_key = str(provider.get("api_key") or "")
         provider["has_api_key"] = bool(api_key) or credential_file_has_key(provider)
         provider["api_key"] = ""
+    devspace = public.get("devspace")
+    if isinstance(devspace, dict):
+        devspace["has_token"] = bool(devspace.get("token"))
+        devspace["token"] = ""
     return public
 
 
@@ -1675,6 +1686,225 @@ def merge_finished() -> dict[str, Any]:
         return hydrate_state(state)
 
 
+# ============================================================================
+# DevSpace MCP bridge
+#
+# A self-hosted, token-protected MCP server (Model Context Protocol) that lets a
+# remote MCP client -- ChatGPT, Claude, etc. -- read, edit, search, run, and
+# git-manage files in allow-listed local project folders, and launch a Jarvis
+# swarm. Disabled by default; exposes nothing until the owner enables it and
+# sets a token. Bind stays on localhost -- put a tunnel (Cloudflare/ngrok) in
+# front for remote access. See docs/REMOTE_MCP_BRIDGE.md.
+# ============================================================================
+
+MCP_PROTOCOL_VERSION = "2025-03-26"
+MCP_SESSION_ID = "jcode-jarvise-devspace"
+
+
+def devspace_config() -> dict[str, Any]:
+    settings = load_settings(include_secrets=True)
+    cfg = settings.get("devspace") or {}
+    enabled = bool(cfg.get("enabled")) or str(os.environ.get("JARVIS_MCP_ENABLED", "")).lower() in ("1", "true", "yes")
+    token = os.environ.get("JARVIS_MCP_TOKEN") or str(cfg.get("token") or "")
+    roots_env = os.environ.get("JARVIS_MCP_ROOTS")
+    raw_roots = [r for r in roots_env.split(os.pathsep) if r.strip()] if roots_env else (cfg.get("allowed_roots") or [str(ROOT)])
+    roots: list[Path] = []
+    for raw in raw_roots:
+        try:
+            roots.append(Path(os.path.expandvars(os.path.expanduser(str(raw)))).resolve())
+        except OSError:
+            continue
+    # Generate and persist a token the first time the bridge is enabled empty.
+    if enabled and not token and not os.environ.get("JARVIS_MCP_TOKEN"):
+        token = secrets.token_urlsafe(24)
+        full = load_settings(include_secrets=True)
+        full["devspace"] = {**(full.get("devspace") or {}), "enabled": True, "token": token}
+        SETTINGS_FILE.write_text(json.dumps(full, indent=2), encoding="utf-8")
+        print(f"[jarvis] DevSpace MCP token generated: {token}")
+    return {"enabled": enabled, "token": token, "roots": roots or [ROOT], "allow_shell": bool(cfg.get("allow_shell", True))}
+
+
+def devspace_resolve(path_str: str | None, roots: list[Path]) -> Path:
+    candidate = Path(os.path.expandvars(os.path.expanduser(str(path_str or "."))))
+    if not candidate.is_absolute():
+        candidate = (roots[0] / candidate)
+    candidate = candidate.resolve()
+    for root in roots:
+        try:
+            candidate.relative_to(root)
+            return candidate
+        except ValueError:
+            continue
+    raise PermissionError(f"Path is outside the allowed workspace roots: {path_str}")
+
+
+def ds_list_projects(cfg: dict[str, Any]) -> Any:
+    return [
+        {"path": str(root), "exists": root.exists(), "is_git_repo": root.exists() and is_git_repo(root)}
+        for root in cfg["roots"]
+    ]
+
+
+def ds_read_file(cfg: dict[str, Any], path: str, max_bytes: int = 200000) -> str:
+    target = devspace_resolve(path, cfg["roots"])
+    if not target.is_file():
+        raise FileNotFoundError(f"No such file: {path}")
+    return target.read_text(encoding="utf-8", errors="replace")[:max_bytes]
+
+
+def ds_write_file(cfg: dict[str, Any], path: str, content: str) -> str:
+    target = devspace_resolve(path, cfg["roots"])
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return f"Wrote {len(content)} characters to {target}"
+
+
+def ds_list_dir(cfg: dict[str, Any], path: str = ".") -> Any:
+    target = devspace_resolve(path, cfg["roots"])
+    if not target.is_dir():
+        raise NotADirectoryError(f"Not a directory: {path}")
+    out = []
+    for entry in sorted(target.iterdir()):
+        out.append(
+            {
+                "name": entry.name,
+                "is_dir": entry.is_dir(),
+                "size": entry.stat().st_size if entry.is_file() else None,
+            }
+        )
+    return out
+
+
+def ds_search(cfg: dict[str, Any], query: str, path: str | None = None, max_results: int = 100) -> Any:
+    root = devspace_resolve(path, cfg["roots"]) if path else cfg["roots"][0]
+    max_results = max(1, min(1000, int(max_results)))
+    rg = shutil.which("rg")
+    results: list[str] = []
+    if rg:
+        proc = run([rg, "--line-number", "--no-heading", "--color", "never", "-S", query, str(root)], cwd=root, check=False)
+        results = proc.stdout.splitlines()[:max_results]
+    else:
+        for dirpath, dirs, files in os.walk(root):
+            dirs[:] = [d for d in dirs if d not in (".git", "node_modules", "target", ".jcode")]
+            for filename in files:
+                filepath = Path(dirpath) / filename
+                try:
+                    for line_no, line in enumerate(filepath.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+                        if query in line:
+                            results.append(f"{filepath}:{line_no}:{line.strip()[:200]}")
+                            if len(results) >= max_results:
+                                return results
+                except OSError:
+                    continue
+    return results
+
+
+def ds_run_command(cfg: dict[str, Any], command: str, cwd: str | None = None) -> Any:
+    if not cfg["allow_shell"]:
+        raise PermissionError("Shell execution is disabled (devspace.allow_shell = false).")
+    workdir = devspace_resolve(cwd, cfg["roots"]) if cwd else cfg["roots"][0]
+    proc = subprocess.run(
+        command,
+        cwd=str(workdir),
+        shell=True,
+        text=True,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        timeout=180,
+    )
+    return {"exit_code": proc.returncode, "output": (proc.stdout or "")[-20000:]}
+
+
+def ds_git_status(cfg: dict[str, Any], path: str | None = None) -> str:
+    root = devspace_resolve(path, cfg["roots"]) if path else cfg["roots"][0]
+    return git_status_for(root)
+
+
+def ds_launch_swarm(cfg: dict[str, Any], mission: str, max_agents: int = 6) -> Any:
+    mission = str(mission or "").strip()
+    if not mission:
+        raise ValueError("mission is required")
+    plan = choose_plan(mission, max_agents=max(1, min(12, int(max_agents))))
+    with STATE_LOCK:
+        state = load_state()
+        start_session(state)
+        state["plan"] = plan
+        state["plan_preview"] = True
+        state["whiteboard"] = build_whiteboard(mission, plan)
+        save_state(state)
+    result = start_workers(mission, plan)
+    return {"launched": len(result.get("agents", [])), "session_id": result.get("session_id"), "tasks": len(plan)}
+
+
+def mcp_tools() -> list[dict[str, Any]]:
+    return [
+        {"name": "list_projects", "description": "List the local project folders this server may access.", "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "read_file", "description": "Read a UTF-8 text file inside an allowed project.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}, "required": ["path"]}},
+        {"name": "write_file", "description": "Create or overwrite a text file inside an allowed project.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+        {"name": "list_directory", "description": "List entries of a directory inside an allowed project.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
+        {"name": "search_files", "description": "Search file contents (ripgrep) inside an allowed project.", "inputSchema": {"type": "object", "properties": {"query": {"type": "string"}, "path": {"type": "string"}, "max_results": {"type": "integer"}}, "required": ["query"]}},
+        {"name": "run_command", "description": "Run a shell command inside an allowed project (if shell is enabled).", "inputSchema": {"type": "object", "properties": {"command": {"type": "string"}, "cwd": {"type": "string"}}, "required": ["command"]}},
+        {"name": "git_status", "description": "Show git status --short for an allowed project.", "inputSchema": {"type": "object", "properties": {"path": {"type": "string"}}}},
+        {"name": "launch_swarm", "description": "Launch a Jarvis multi-agent swarm on a mission in the active workspace.", "inputSchema": {"type": "object", "properties": {"mission": {"type": "string"}, "max_agents": {"type": "integer"}}, "required": ["mission"]}},
+    ]
+
+
+def mcp_call_tool(cfg: dict[str, Any], name: str, args: dict[str, Any]) -> Any:
+    if name == "list_projects":
+        return ds_list_projects(cfg)
+    if name == "read_file":
+        return ds_read_file(cfg, args["path"])
+    if name == "write_file":
+        return ds_write_file(cfg, args["path"], args.get("content", ""))
+    if name == "list_directory":
+        return ds_list_dir(cfg, args.get("path", "."))
+    if name == "search_files":
+        return ds_search(cfg, args["query"], args.get("path"), int(args.get("max_results", 100)))
+    if name == "run_command":
+        return ds_run_command(cfg, args["command"], args.get("cwd"))
+    if name == "git_status":
+        return ds_git_status(cfg, args.get("path"))
+    if name == "launch_swarm":
+        return ds_launch_swarm(cfg, args["mission"], int(args.get("max_agents", 6)))
+    raise ValueError(f"Unknown tool: {name}")
+
+
+def mcp_handle(cfg: dict[str, Any], message: dict[str, Any]) -> dict[str, Any] | None:
+    """Handle one JSON-RPC message; return a response dict or None for notifications."""
+    msg_id = message.get("id")
+    method = message.get("method")
+    params = message.get("params") or {}
+    if method == "initialize":
+        proto = params.get("protocolVersion") or MCP_PROTOCOL_VERSION
+        return {
+            "jsonrpc": "2.0",
+            "id": msg_id,
+            "result": {
+                "protocolVersion": proto,
+                "capabilities": {"tools": {"listChanged": False}},
+                "serverInfo": {"name": "jcode-jarvise-devspace", "version": "1.0.0"},
+            },
+        }
+    if method in ("notifications/initialized", "initialized", "notifications/cancelled"):
+        return None
+    if method == "ping":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {}}
+    if method == "tools/list":
+        return {"jsonrpc": "2.0", "id": msg_id, "result": {"tools": mcp_tools()}}
+    if method == "tools/call":
+        name = str(params.get("name") or "")
+        args = params.get("arguments") or {}
+        try:
+            result = mcp_call_tool(cfg, name, args)
+            text = result if isinstance(result, str) else json.dumps(result, indent=2)
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [{"type": "text", "text": text}], "isError": False}}
+        except Exception as exc:  # surface tool errors to the model
+            return {"jsonrpc": "2.0", "id": msg_id, "result": {"content": [{"type": "text", "text": f"Error: {exc}"}], "isError": True}}
+    if msg_id is None:
+        return None
+    return {"jsonrpc": "2.0", "id": msg_id, "error": {"code": -32601, "message": f"Method not found: {method}"}}
+
+
 class Handler(BaseHTTPRequestHandler):
     def send_json(self, body: dict[str, Any], status: int = 200) -> None:
         data = json.dumps(body).encode("utf-8")
@@ -1689,6 +1919,63 @@ class Handler(BaseHTTPRequestHandler):
         if length == 0:
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
+
+    def mcp_authorized(self, cfg: dict[str, Any]) -> bool:
+        token = cfg.get("token") or ""
+        if not token:
+            return False
+        auth = self.headers.get("Authorization", "")
+        if auth.startswith("Bearer ") and secrets.compare_digest(auth[7:].strip(), token):
+            return True
+        if secrets.compare_digest(self.headers.get("X-DevSpace-Token", ""), token):
+            return True
+        supplied = parse_qs(urlparse(self.path).query).get("token", [""])[0]
+        return bool(supplied) and secrets.compare_digest(supplied, token)
+
+    def handle_mcp(self) -> None:
+        """DevSpace MCP bridge: token-gated JSON-RPC over Streamable HTTP."""
+        cfg = devspace_config()
+        if not cfg["enabled"]:
+            self.send_json({"error": "DevSpace MCP bridge is disabled. Enable devspace in settings."}, status=403)
+            return
+        if not self.mcp_authorized(cfg):
+            data = json.dumps({"jsonrpc": "2.0", "id": None, "error": {"code": -32001, "message": "Unauthorized"}}).encode("utf-8")
+            self.send_response(401)
+            self.send_header("WWW-Authenticate", 'Bearer realm="devspace"')
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(data)))
+            self.end_headers()
+            self.wfile.write(data)
+            return
+        length = int(self.headers.get("Content-Length", "0"))
+        raw = self.rfile.read(length).decode("utf-8") if length else ""
+        try:
+            message = json.loads(raw) if raw else {}
+        except json.JSONDecodeError:
+            self.send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32700, "message": "Parse error"}}, status=400)
+            return
+        if isinstance(message, list):
+            responses = [r for r in (mcp_handle(cfg, m) for m in message if isinstance(m, dict)) if r is not None]
+            self.send_mcp(responses if responses else None)
+            return
+        if not isinstance(message, dict):
+            self.send_json({"jsonrpc": "2.0", "id": None, "error": {"code": -32600, "message": "Invalid Request"}}, status=400)
+            return
+        self.send_mcp(mcp_handle(cfg, message))
+
+    def send_mcp(self, response: Any) -> None:
+        if response is None:
+            self.send_response(202)
+            self.send_header("Mcp-Session-Id", MCP_SESSION_ID)
+            self.end_headers()
+            return
+        data = json.dumps(response).encode("utf-8")
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Mcp-Session-Id", MCP_SESSION_ID)
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
 
     def handle_apcall_get(self, parsed: Any) -> None:
         """apcall-net HTTP read transport: sessions list, current, and replay."""
@@ -1745,6 +2032,18 @@ class Handler(BaseHTTPRequestHandler):
             if parsed.path.startswith("/apcall/v1"):
                 self.handle_apcall_get(parsed)
                 return
+            if parsed.path == "/mcp":
+                cfg = devspace_config()
+                self.send_json(
+                    {
+                        "server": "jcode-jarvise-devspace",
+                        "protocol": MCP_PROTOCOL_VERSION,
+                        "enabled": cfg["enabled"],
+                        "transport": "POST /mcp (JSON-RPC 2.0)",
+                        "tools": [tool["name"] for tool in mcp_tools()],
+                    }
+                )
+                return
             route = "index.html" if parsed.path == "/" else parsed.path.lstrip("/")
             path = (ASSET_DIR / route).resolve()
             if not str(path).startswith(str(ASSET_DIR.resolve())) or not path.exists():
@@ -1770,6 +2069,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_POST(self) -> None:  # noqa: N802
         try:
+            if urlparse(self.path).path == "/mcp":
+                self.handle_mcp()
+                return
             body = self.read_json()
             if self.path == "/api/plan":
                 task = str(body.get("task", "")).strip()
