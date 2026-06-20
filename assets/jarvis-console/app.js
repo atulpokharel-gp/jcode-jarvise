@@ -77,7 +77,6 @@ let latestWhiteboard = null;
 let latestHealing = { enabled: true, attempts: {} };
 let healingEnabled = true;
 let launchBlocked = false;
-let selectedAgentId = "";
 const openConsoles = new Set();
 const userClosedConsoles = new Set();
 let consoleZ = 40;
@@ -755,30 +754,49 @@ function renderHealing(healing, agents) {
     });
 }
 
+function taskStatusLabel(status) {
+  const map = {
+    todo: "to do",
+    in_progress: "in progress",
+    healing: "being repaired",
+    done: "done",
+    failed: "failed",
+  };
+  return map[status] || status || "to do";
+}
+
 function renderWhiteboard(wb) {
   latestWhiteboard = wb || null;
-  const hasBoard = Boolean(wb && wb.lanes && wb.lanes.length);
-  if (whiteboardButton) whiteboardButton.disabled = !hasBoard;
+  const tasks = (wb && wb.tasks) || [];
+  const hasBoard = Boolean(tasks.length);
   if (!hasBoard) return;
   if (wbMission) wbMission.textContent = wb.mission || "-";
+  const done = wb.done_count ?? tasks.filter((task) => task.status === "done").length;
+  const total = wb.total_count ?? tasks.length;
   if (wbStatus) {
     wbStatus.textContent = wb.status || "planning";
-    wbStatus.className = `badge ${wb.status === "executing" ? "status-running" : wb.status === "merged" ? "status-complete" : ""}`;
+    wbStatus.className = `badge ${wb.status === "executing" ? "status-running" : wb.status === "complete" || wb.status === "merged" ? "status-complete" : ""}`;
   }
-  if (wbLanes) {
-    wbLanes.innerHTML = "";
-    wb.lanes.forEach((lane) => {
+  if (wbProgressBar) wbProgressBar.style.width = `${total ? Math.round((done / total) * 100) : 0}%`;
+  if (wbProgressText) wbProgressText.textContent = `${done} / ${total} done`;
+  if (wbTasks) {
+    wbTasks.innerHTML = "";
+    tasks.forEach((task) => {
+      const status = String(task.status || "todo");
       const node = document.createElement("article");
-      node.className = "wb-lane";
-      const deps = (lane.depends_on || []).length ? `depends on: ${lane.depends_on.join(", ")}` : "independent lane";
+      node.className = `wb-task wb-${status}`;
+      const pickedBy = task.picked_by ? ` · picked up by ${escapeHtml(task.picked_by)}` : "";
+      const assignee = task.assignee ? `${escapeHtml(task.assignee)}${pickedBy}` : task.recreated ? "recreated · awaiting pickup" : "unassigned";
       node.innerHTML = `
-        <span class="wb-lane-index">Lane ${escapeHtml(lane.index)}</span>
-        <strong>${escapeHtml(lane.role)}</strong>
-        <p>${escapeHtml(lane.focus)}</p>
-        <small>${escapeHtml(deps)}</small>
-        <small class="wb-branch">${escapeHtml(lane.branch || "branch pending")}</small>
+        <span class="wb-check ${status === "done" ? "checked" : ""}">${status === "done" ? "&#10003;" : status === "failed" ? "&#10005;" : ""}</span>
+        <div class="wb-task-body">
+          <strong>${escapeHtml(task.title)}</strong>
+          <p>${escapeHtml(task.detail)}</p>
+          <small class="${statusClass(status === "in_progress" ? "running" : status)}">${escapeHtml(taskStatusLabel(status))} · ${assignee}</small>
+          <small class="wb-branch">${escapeHtml(task.branch || "branch pending")}</small>
+        </div>
       `;
-      wbLanes.appendChild(node);
+      wbTasks.appendChild(node);
     });
   }
   if (wbNotes) {
@@ -801,7 +819,7 @@ function renderWhiteboard(wb) {
 }
 
 function openWhiteboard() {
-  if (!latestWhiteboard || !latestWhiteboard.lanes || !latestWhiteboard.lanes.length) return;
+  if (!latestWhiteboard || !latestWhiteboard.tasks || !latestWhiteboard.tasks.length) return;
   renderWhiteboard(latestWhiteboard);
   whiteboardModal.hidden = false;
 }
@@ -849,20 +867,130 @@ async function postWhiteboardNote() {
   renderApcall(state.apcall || latestApcall);
 }
 
-async function deployFromWhiteboard() {
-  closeWhiteboardModal();
-  await startWorkers();
+function mergeableAgents() {
+  return latestAgents.filter((agent) => agent.status === "complete" && agent.kind !== "healer" && !agent.merged);
 }
 
-async function refreshAgentLog() {
-  if (!selectedAgentId) return;
-  try {
-    const response = await api(`/api/agent/log?id=${encodeURIComponent(selectedAgentId)}`);
-    agentLog.textContent = response.log || "Log is empty.";
-    agentLog.scrollTop = agentLog.scrollHeight;
-  } catch (error) {
-    agentLog.textContent = error.message;
+function activeAgentCount() {
+  const summary = latestSummary || {};
+  return (
+    Number(summary.running || 0) +
+    Number(summary.starting || 0) +
+    Number(summary.healing || 0)
+  );
+}
+
+function updateMainButtons() {
+  const active = activeAgentCount();
+  const conflict = Number(latestSummary.conflict || 0);
+  const mergeable = mergeableAgents().length;
+  let label = "Launch Swarm";
+  let mode = "launch";
+  let cls = "primary";
+  let disabled = false;
+  if (active > 0) {
+    label = `Stop ${active} Agent${active === 1 ? "" : "s"}`;
+    mode = "stop";
+    cls = "danger";
+  } else if (conflict > 0) {
+    label = "Resolve Conflict in Workspace";
+    mode = "conflict";
+    cls = "danger";
+    disabled = true;
+  } else if (mergeable > 0) {
+    label = "Merge & Combine";
+    mode = "merge";
+    cls = "primary";
+  } else if (launchBlocked) {
+    label = "Commit/Stash to Launch";
+    mode = "blocked";
+    cls = "primary";
+    disabled = true;
   }
+  [launchButton, wbActionButton].forEach((button) => {
+    if (!button) return;
+    button.textContent = label;
+    button.dataset.mode = mode;
+    button.disabled = disabled;
+    button.classList.toggle("primary", cls === "primary");
+    button.classList.toggle("danger", cls === "danger");
+  });
+}
+
+async function mainAction() {
+  const mode = launchButton?.dataset.mode || "launch";
+  if (mode === "stop") return stopAll();
+  if (mode === "merge") return mergeFinished();
+  if (mode === "conflict") {
+    alert("A merge conflict needs resolving in the workspace, then launch again.");
+    return;
+  }
+  if (mode === "blocked") {
+    alert(launchGate.textContent || "Workspace is not ready to launch.");
+    return;
+  }
+  return launchSwarm();
+}
+
+async function launchSwarm() {
+  const task = taskInput.value.trim();
+  if (!task) {
+    alert("Enter a mission first.");
+    return;
+  }
+  setBusy(true, "Launching swarm");
+  speak(`Launching the swarm for: ${task}`, true);
+  try {
+    const editedPlan = gatherPlanFromDom();
+    const state = await api("/api/launch", {
+      method: "POST",
+      body: JSON.stringify({
+        task,
+        max_agents: Number(agentLimit.value),
+        plan: editedPlan.length ? editedPlan : undefined,
+      }),
+    });
+    renderAll(state);
+    openWhiteboard();
+    showConsoleDeck();
+    renderConsoleDeck(state.agents || []);
+    pollConsoleLogs();
+  } finally {
+    setBusy(false);
+  }
+}
+
+async function stopAll() {
+  const running = latestAgents.filter((agent) => ["starting", "running", "healing"].includes(agent.status));
+  if (!running.length) return;
+  if (!confirm(`Stop ${running.length} running agent(s)?`)) return;
+  setBusy(true, "Stopping all agents");
+  speak("Stopping all running agents.", true);
+  try {
+    for (const agent of running) {
+      await api("/api/agent/stop", { method: "POST", body: JSON.stringify({ id: agent.id }) }).catch(() => {});
+    }
+    await refresh();
+  } finally {
+    setBusy(false);
+  }
+}
+
+function renderAll(state) {
+  latestPlanPreview = Boolean(state.plan_preview);
+  gitStatus.textContent = state.git_status || "Clean";
+  renderMetrics(state);
+  if (document.activeElement?.closest?.("#plan") !== planEl) {
+    renderPlan(state.plan);
+  }
+  renderAgents(state.agents || []);
+  renderEvents(state.events || []);
+  renderApcall(state.apcall || []);
+  renderHealing(state.healing, state.agents || []);
+  renderWhiteboard(state.whiteboard);
+  renderConsoleDeck(state.agents || []);
+  renderLiveActivity(state);
+  updateMainButtons();
 }
 
 async function refresh() {
@@ -870,19 +998,9 @@ async function refresh() {
   if (!wasBusy) setBusy(true, "Scanning");
   try {
     const state = await api("/api/status");
-    latestPlanPreview = Boolean(state.plan_preview);
     updateLastSeen();
-    gitStatus.textContent = state.git_status || "Clean";
-    renderMetrics(state);
-    if (document.activeElement?.closest?.("#plan") !== planEl) {
-      renderPlan(state.plan);
-    }
-    renderAgents(state.agents || []);
-    renderEvents(state.events || []);
-    renderApcall(state.apcall || []);
-    renderHealing(state.healing, state.agents || []);
-    renderWhiteboard(state.whiteboard);
-    await refreshAgentLog();
+    renderAll(state);
+    await pollConsoleLogs();
   } finally {
     if (!wasBusy) setBusy(false);
   }
@@ -1050,36 +1168,10 @@ async function planAgents() {
       method: "POST",
       body: JSON.stringify({ task, max_agents: Number(agentLimit.value) }),
     });
-    latestPlanPreview = Boolean(response.plan_preview);
-    renderPlan(response.plan);
-    renderEvents(response.events || []);
-    renderApcall(response.apcall || []);
-    renderHealing(response.healing, response.agents || latestAgents);
-    renderWhiteboard(response.whiteboard);
-    renderMetrics(response);
+    renderAll(response);
     updateLastSeen();
     openWhiteboard();
-    speak(`Plan ready. ${response.plan?.length || 0} agents on the whiteboard, ready to deploy.`, true);
-  } finally {
-    setBusy(false);
-  }
-}
-
-async function startWorkers() {
-  setBusy(true, "Starting workers");
-  try {
-    const task = taskInput.value.trim();
-    if (!task) return;
-    const plan = gatherPlanFromDom();
-    if (!plan.length) {
-      await planAgents();
-    }
-    speak(`Launching ${currentPlan.length || plan.length} worker agents.`, true);
-    await api("/api/start", {
-      method: "POST",
-      body: JSON.stringify({ task, plan: currentPlan }),
-    });
-    await refresh();
+    speak(`Plan ready. ${response.plan?.length || 0} tasks on the whiteboard.`, true);
   } finally {
     setBusy(false);
   }
@@ -1185,15 +1277,19 @@ function setupVoice() {
       const lower = text.toLowerCase();
       const commandKey = normalizeVoiceText(text);
       if (commandKey === lastVoiceCommand) return;
-      if (lower.includes("start workers") || lower.includes("deploy agents")) {
+      if (
+        lower.includes("launch swarm") ||
+        lower.includes("start workers") ||
+        lower.includes("deploy agents")
+      ) {
         lastVoiceCommand = commandKey;
-        speak("Deploy command received. Starting workers.", true);
-        startWorkers().catch((error) => alert(error.message));
+        speak("Launch command received. Deploying the swarm.", true);
+        launchSwarm().catch((error) => alert(error.message));
         return;
       }
       if (lower.includes("plan agents")) {
         lastVoiceCommand = commandKey;
-        speak("Plan command received. Building the agent plan.", true);
+        speak("Plan command received. Building the checklist.", true);
         planAgents().catch((error) => alert(error.message));
         return;
       }
@@ -1223,11 +1319,16 @@ function setupVoice() {
 agentLimit.addEventListener("input", () => {
   agentLimitValue.textContent = agentLimit.value;
 });
-planButton.addEventListener("click", () => planAgents().catch((error) => alert(error.message)));
-whiteboardButton.addEventListener("click", () => openWhiteboard());
-startButton.addEventListener("click", () => startWorkers().catch((error) => alert(error.message)));
-mergeButton.addEventListener("click", () => mergeFinished().catch((error) => alert(error.message)));
-refreshButton.addEventListener("click", () => refresh().catch((error) => alert(error.message)));
+launchButton.addEventListener("click", () => mainAction().catch((error) => alert(error.message)));
+wbActionButton.addEventListener("click", () => mainAction().catch((error) => alert(error.message)));
+consolesButton.addEventListener("click", () => {
+  const running = latestAgents.filter((agent) => ["starting", "running", "healing", "failed", "conflict"].includes(agent.status));
+  if (!running.length) {
+    alert("No agents to show. Launch the swarm first.");
+    return;
+  }
+  running.forEach((agent) => openConsole(agent.id));
+});
 openWorkspaceButton.addEventListener("click", () => browseWorkspace().catch((error) => alert(error.message)));
 setWorkspaceButton.addEventListener("click", () => setWorkspace().catch((error) => alert(error.message)));
 createProjectButton.addEventListener("click", () => createProject().catch((error) => alert(error.message)));
@@ -1241,8 +1342,6 @@ wbNoteButton.addEventListener("click", () => postWhiteboardNote().catch((error) 
 wbNoteInput.addEventListener("keydown", (event) => {
   if (event.key === "Enter") postWhiteboardNote().catch((error) => alert(error.message));
 });
-wbDeployButton.addEventListener("click", () => deployFromWhiteboard().catch((error) => alert(error.message)));
-wbReplanButton.addEventListener("click", () => planAgents().catch((error) => alert(error.message)));
 whiteboardModal.addEventListener("click", (event) => {
   if (event.target === whiteboardModal) closeWhiteboardModal();
 });

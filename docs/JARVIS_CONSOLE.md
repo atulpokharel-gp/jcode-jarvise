@@ -26,14 +26,17 @@ http://127.0.0.1:8765
   git branch, and git clean/dirty state.
 - The folder browser can open directories, switch the active workspace, or
   create a new git-initialized project.
-- The console creates a small plan and decides how many worker scopes to use.
+- A single **Launch Swarm** control drives the whole run: it breaks the mission
+  into a checklist, opens the whiteboard, and starts the workers in one step.
+  The same button becomes **Stop Agents** while work is running and **Merge &
+  Combine** once everything is done.
 - The agent limit can scale up to 12 workers for a fuller company-style team:
   mission architect, UX, frontend, orchestration, security, database,
   customer advocates, QA, git integration, docs, and polish.
 - The Agent Army map shows the master controller plus every planned or running
   worker, including stage, model route, branch, and status.
-- The plan cards are editable before launch, so the master can change roles or
-  scope text before workers start.
+- The plan cards are still editable; if you tweak them before launching, the
+  edited scopes are used instead of the auto-generated ones.
 - Worker launch requires a clean active workspace so every branch has a clear base.
 - Each worker gets its own branch and worktree under `.jcode/jarvis-console/`.
 - Each worker runs `jcode run` with scoped instructions.
@@ -41,8 +44,9 @@ http://127.0.0.1:8765
   worker worktree.
 - The worker dashboard refreshes live and shows running, complete, failed, and
   conflict counts.
-- Selecting a worker opens an inspector with branch, worktree, log path, stop
-  control, and live log tail.
+- Each worker opens its own floating **live console** that streams the real log
+  tail. Consoles pop up automatically as workers start, can be dragged,
+  minimized, or closed, and offer a stop (or dispatch-healer) control inline.
 - The master can merge completed worker branches from the console.
 - If git reports a conflict, the merge stops and the master resolves it in the
   root worktree.
@@ -63,14 +67,17 @@ agent protocol lives in [APCALL_NETWORK_PROTOCOL.md](APCALL_NETWORK_PROTOCOL.md)
 
 ## Agent Whiteboard
 
-Clicking **Plan Agents** pops up a shared whiteboard. The master's single
-"thought" (the mission) is rerouted into one lane per agent so the whole swarm
-plans together before any branch is touched. Each lane shows the role, focus,
-its dependencies (workers depend on the Mission Architect; integration/QA/merge
-lanes depend on everyone), and the branch it will claim. Operators can post
-planning notes, then **Deploy From Whiteboard** launches the workers. Lanes are
-combined back into the base branch at merge time, and the board status moves
-`planning -> executing -> merged`.
+The whiteboard pops up by itself on launch and is a live **checklist**. The
+master's single "thought" (the mission) is broken into one task per agent. Each
+task moves through `todo -> in progress -> done`, driven entirely by the real
+agent assigned to it — no mock state. A progress bar tracks `done / total`, and
+each task shows its assignee, branch, and dependencies (workers depend on the
+Mission Architect; integration/QA/merge tasks depend on everyone).
+
+If an agent fails and cannot be repaired, its task is **recreated** and handed
+back to the board so another agent (the self-healing agent) can pick it up and
+finish the work. Branches are combined back into the base branch at merge time,
+and the board status moves `planning -> executing -> complete`.
 
 ## Self-Healing Agent
 
@@ -80,10 +87,10 @@ automatically dispatches a real healing worker into the **same worktree and
 branch** as the failed agent. The healing worker runs with the strongest
 available model, is given the failed worker's log tail, and is told to diagnose
 and repair the scope. Success marks the original agent `complete` (healed);
-failure retries up to `HEAL_MAX_ATTEMPTS` (2) before escalating to master.
-Auto-repair can be armed/muted from the **Repair Agent** panel, and a manual
-**Dispatch Healer** button is available in the agent inspector for any failed or
-conflicted worker.
+failure retries up to `HEAL_MAX_ATTEMPTS` (2) before the task is recreated for
+pickup. Auto-repair can be armed/muted from the **Repair Agent** panel, and a
+manual dispatch-healer control is available inside any failed or conflicted
+worker's live console.
 
 ## Voice
 

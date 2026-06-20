@@ -1674,6 +1674,297 @@ button.primary::after {
   gap: 8px;
 }
 
+/* ============================================================
+   v3: autonomous control, live consoles, checklist board
+   ============================================================ */
+
+.launch-button {
+  width: 100%;
+  min-height: 56px;
+  font-size: 16px;
+  font-weight: 900;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.head-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* --- live activity feed in the hero ------------------------ */
+.live-activity {
+  width: 100%;
+  display: grid;
+  gap: 6px;
+  align-content: start;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.la-headline {
+  color: var(--green);
+  font-weight: 800;
+  letter-spacing: 0.04em;
+  text-shadow: 0 0 16px rgba(53, 255, 143, 0.5);
+}
+
+.la-line {
+  color: rgba(220, 255, 239, 0.78);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.la-line b {
+  color: var(--cyan);
+}
+
+.la-line i {
+  color: var(--muted);
+  font-style: normal;
+}
+
+.agent-healer {
+  border-color: rgba(255, 122, 217, 0.5) !important;
+}
+
+/* --- floating per-agent consoles --------------------------- */
+.console-deck {
+  position: fixed;
+  inset: 0;
+  z-index: 15;
+  pointer-events: none;
+}
+
+.console-deck[hidden] {
+  display: none;
+}
+
+.live-console {
+  position: absolute;
+  width: min(440px, calc(100vw - 36px));
+  max-height: 60vh;
+  display: grid;
+  grid-template-rows: auto 1fr;
+  pointer-events: auto;
+  border: 1px solid rgba(78, 231, 255, 0.4);
+  border-radius: 8px;
+  overflow: hidden;
+  background: linear-gradient(180deg, rgba(8, 18, 28, 0.98), rgba(3, 9, 15, 0.98));
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 0 1px rgba(78, 231, 255, 0.08);
+}
+
+.live-console.lc-running {
+  border-color: rgba(53, 255, 143, 0.6);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(53, 255, 143, 0.14);
+}
+
+.live-console.lc-failed,
+.live-console.lc-conflict {
+  border-color: rgba(255, 95, 121, 0.6);
+}
+
+.live-console.lc-healing,
+.live-console.lc-healer {
+  border-color: rgba(255, 122, 217, 0.6);
+  box-shadow: 0 24px 60px rgba(0, 0, 0, 0.6), 0 0 30px rgba(255, 122, 217, 0.16);
+}
+
+.live-console.minimized {
+  max-height: none;
+}
+
+.live-console.minimized .lc-log {
+  display: none;
+}
+
+.lc-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 10px;
+  cursor: grab;
+  background: linear-gradient(180deg, rgba(24, 47, 66, 0.96), rgba(9, 21, 34, 0.96));
+  border-bottom: 1px solid rgba(78, 231, 255, 0.18);
+  user-select: none;
+}
+
+.lc-head:active {
+  cursor: grabbing;
+}
+
+.lc-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--green);
+  box-shadow: 0 0 10px rgba(53, 255, 143, 0.8);
+  flex: none;
+}
+
+.lc-failed .lc-dot,
+.lc-conflict .lc-dot {
+  background: var(--red);
+  box-shadow: 0 0 10px rgba(255, 95, 121, 0.8);
+}
+
+.lc-healing .lc-dot,
+.lc-healer .lc-dot {
+  background: var(--heal);
+  box-shadow: 0 0 10px rgba(255, 122, 217, 0.8);
+}
+
+.lc-title {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+
+.lc-status {
+  font-size: 10px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.lc-actions {
+  display: flex;
+  gap: 4px;
+  flex: none;
+}
+
+.lc-actions button {
+  min-height: 24px;
+  min-width: 26px;
+  padding: 0 6px;
+  border-radius: 5px;
+  font-size: 12px;
+  line-height: 1;
+}
+
+.lc-log {
+  margin: 0;
+  padding: 10px 12px;
+  overflow: auto;
+  font-family: ui-monospace, SFMono-Regular, Consolas, "Liberation Mono", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  color: rgba(214, 245, 255, 0.92);
+  white-space: pre-wrap;
+  word-break: break-word;
+  background: rgba(2, 7, 12, 0.92);
+}
+
+/* --- whiteboard checklist ---------------------------------- */
+.wb-progress {
+  height: 6px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: rgba(255, 255, 255, 0.08);
+}
+
+.wb-progress-bar {
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: linear-gradient(90deg, var(--green), var(--cyan));
+  transition: width 320ms ease;
+}
+
+.wb-tasks {
+  display: grid;
+  gap: 10px;
+  align-content: start;
+  max-height: 52vh;
+  overflow: auto;
+}
+
+.wb-task {
+  display: grid;
+  grid-template-columns: 28px minmax(0, 1fr);
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid rgba(78, 231, 255, 0.22);
+  border-left-width: 3px;
+  border-radius: 8px;
+  background: linear-gradient(180deg, rgba(10, 24, 30, 0.92), rgba(4, 12, 18, 0.92));
+}
+
+.wb-task.wb-done {
+  border-left-color: var(--green);
+  opacity: 0.85;
+}
+
+.wb-task.wb-in_progress {
+  border-left-color: var(--cyan);
+  box-shadow: 0 0 22px rgba(78, 231, 255, 0.1);
+}
+
+.wb-task.wb-failed {
+  border-left-color: var(--red);
+}
+
+.wb-task.wb-healing {
+  border-left-color: var(--heal);
+  box-shadow: 0 0 22px rgba(255, 122, 217, 0.12);
+}
+
+.wb-task.wb-todo {
+  border-left-color: rgba(139, 164, 184, 0.5);
+}
+
+.wb-check {
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  border: 1px solid rgba(139, 164, 184, 0.4);
+  color: var(--green);
+  font-weight: 900;
+}
+
+.wb-check.checked {
+  border-color: var(--green);
+  background: rgba(53, 255, 143, 0.14);
+}
+
+.wb-failed .wb-check {
+  color: var(--red);
+  border-color: rgba(255, 95, 121, 0.5);
+}
+
+.wb-task-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.wb-task-body strong {
+  font-size: 13px;
+}
+
+.wb-task-body p {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.wb-task-body small {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.wb-task-body .wb-branch {
+  color: var(--green);
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+
 @keyframes sheen {
   0%,
   60%,
