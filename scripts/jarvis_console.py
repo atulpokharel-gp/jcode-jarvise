@@ -39,7 +39,7 @@ PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 DISPATCH_QUEUE: list[dict[str, Any]] = []  # pending healer/QA jobs waiting for a slot
 STATE_LOCK = threading.Lock()
 # Remote access — PIN auth + Cloudflare Tunnel
-SESSION_TOKENS: dict[str, float] = {}  # token → expiry unix timestamp
+SESSION_TOKENS: dict[str, float] = {}  # token -> expiry unix timestamp
 SESSION_LOCK = threading.Lock()
 SESSION_TTL = 86400  # 24 h
 TUNNEL_PROC: subprocess.Popen[Any] | None = None
@@ -715,11 +715,11 @@ def start_tunnel(port: int) -> None:
                     with TUNNEL_LOCK:
                         TUNNEL_URL = url
                     pin = ensure_pin()
-                    print(f"[jarvis] ╔══════════════════════════════════════╗")
-                    print(f"[jarvis] ║  Remote access ready                 ║")
-                    print(f"[jarvis] ║  URL: {url:<32}║")
-                    print(f"[jarvis] ║  PIN: {pin}                            ║")
-                    print(f"[jarvis] ╚══════════════════════════════════════╝")
+                    print(f"[jarvis] +--------------------------------------+")
+                    print(f"[jarvis] |  Remote access ready                 |")
+                    print(f"[jarvis] |  URL: {url:<32}|")
+                    print(f"[jarvis] |  PIN: {pin}                            |")
+                    print(f"[jarvis] +--------------------------------------+")
                     break
         except Exception:
             pass
@@ -1080,9 +1080,9 @@ def dispatch_restart(state: dict[str, Any], target: dict[str, Any]) -> bool:
     If restarts are also exhausted: ABANDON — mark the task and notify humans.
 
     Escalation ladder:
-      worker fails → heal (same branch, up to HEAL_MAX_ATTEMPTS)
-                   → restart (new branch, up to RESTART_MAX_ATTEMPTS)
-                   → abandon (human review required)
+      worker fails -> heal (same branch, up to HEAL_MAX_ATTEMPTS)
+                   -> restart (new branch, up to RESTART_MAX_ATTEMPTS)
+                   -> abandon (human review required)
     """
     restarts = state.setdefault("restarts", {})
     done = int(restarts.get(target["id"], 0))
@@ -2597,7 +2597,7 @@ def main() -> int:
     pin = ensure_pin()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[jarvis] Local console : http://{args.host}:{args.port}")
-    print(f"[jarvis] Remote PIN    : {pin}  (change in Settings → Remote Access)")
+    print(f"[jarvis] Remote PIN    : {pin}  (change in Settings > Remote Access)")
     print("[jarvis] Set JARVIS_JCODE_ARGS to pin provider/model flags for workers.")
     settings = load_settings(include_secrets=True)
     tunnel_mode = settings.get("remote", {}).get("tunnel", "auto")
