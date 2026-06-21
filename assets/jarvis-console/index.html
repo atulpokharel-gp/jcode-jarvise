@@ -203,14 +203,19 @@
             <span id="healingStatus" class="badge">armed</span>
           </div>
           <p class="subtle">
-            One agent keeps watch over the whole swarm. If a worker can't succeed,
-            it auto-dispatches a healing agent onto that branch to diagnose and fix
-            it, up to two attempts before escalating to master.
+            Repair ladder: heal on same branch (×2) → restart on clean branch (×1) → abandon + human review.
+            Budget limits total agents per mission. Queue holds excess jobs until a slot opens.
           </p>
           <div class="heal-controls">
             <button id="healToggle" class="primary">Auto-Repair: On</button>
             <button id="qaToggle" class="primary">QA Check: On</button>
+            <button id="killswitchButton" class="kill-btn">⏹ Kill All</button>
             <span id="healWatch" class="subtle">Watching 0 agents.</span>
+          </div>
+          <div id="budgetBar" class="budget-bar" hidden>
+            <span id="budgetLabel" class="subtle">Budget: 0 / 0 agents used</span>
+            <div class="budget-track"><div id="budgetFill" class="budget-fill"></div></div>
+            <span id="queueLabel" class="subtle">Queue: 0 pending</span>
           </div>
           <div id="healingBoard" class="healing-board"></div>
         </article>

@@ -34,13 +34,16 @@ WORKTREE_ROOT = STATE_DIR / "worktrees"
 LOG_DIR = STATE_DIR / "logs"
 SESSIONS_DIR = STATE_DIR / "sessions"
 PROCESSES: dict[str, subprocess.Popen[Any]] = {}
+DISPATCH_QUEUE: list[dict[str, Any]] = []  # pending healer/QA jobs waiting for a slot
 STATE_LOCK = threading.Lock()
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 APCALL_CAP = 200
-HEAL_MAX_ATTEMPTS = 2
-QA_MAX_ATTEMPTS = 2
-MAX_CONCURRENT_AGENTS = 16  # global ceiling; prevents cascade runaway (workers + healers + QA)
+HEAL_MAX_ATTEMPTS = 2       # repairs on the same branch before escalating to restart
+QA_MAX_ATTEMPTS = 2         # re-verifications before giving up on a branch
+RESTART_MAX_ATTEMPTS = 1    # clean-branch restarts after all heals are exhausted
+MAX_CONCURRENT_AGENTS = 16  # concurrent process ceiling — excess jobs queue, not drop
+MISSION_AGENT_BUDGET_MULTIPLIER = 4  # total agents per mission = workers × this
 # apcall is the Jarvis inter-agent protocol. Every agent lifecycle transition,
 # planning broadcast, and self-heal handshake is published as an apcall message
 # so the console can show agents coordinating with each other in real time.
@@ -504,6 +507,10 @@ def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("whiteboard", None)
     state.setdefault("healing", {"enabled": True, "attempts": {}})
     state.setdefault("qa", {"enabled": True, "attempts": {}})
+    state["dispatch_queue_depth"] = len(DISPATCH_QUEUE)
+    if state.get("budget"):
+        b = state["budget"]
+        b["remaining"] = max(0, int(b.get("total", 0)) - int(b.get("spent", 0)))
     try:
         state["jcode_path"] = resolve_jcode_binary()
         state["jcode_available"] = True
@@ -872,16 +879,22 @@ def dispatch_healer(state: dict[str, Any], target: dict[str, Any], attempt: int)
     settings = load_settings(include_secrets=True)
     selection = select_healer_model(settings)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
-    if live_process_count() >= MAX_CONCURRENT_AGENTS:
+    if not budget_ok(state):
         apcall(
-            state,
-            APCALL_HEAL_BUS,
-            target["id"],
-            "heal.queued",
-            {"reason": f"global cap {MAX_CONCURRENT_AGENTS} reached"},
-            f"Healer for {target['id']} queued — at concurrent-agent ceiling ({MAX_CONCURRENT_AGENTS}).",
+            state, APCALL_HEAL_BUS, target["id"], "heal.budget_exhausted",
+            {"budget": state.get("budget")},
+            f"Healer for {target['id']} blocked — mission agent budget exhausted.",
         )
         return
+    if live_process_count() >= MAX_CONCURRENT_AGENTS:
+        DISPATCH_QUEUE.append({"kind": "healer", "target_id": target["id"], "attempt": attempt})
+        apcall(
+            state, APCALL_HEAL_BUS, target["id"], "heal.queued",
+            {"queue_depth": len(DISPATCH_QUEUE)},
+            f"Healer for {target['id']} queued (slot will open when an agent finishes).",
+        )
+        return
+    spend_budget(state)
     healer_id = f"healer-{target['id']}-{attempt}"
     healer_log = LOG_DIR / f"{healer_id}.log"
     whiteboard = state.get("whiteboard") or {}
@@ -940,9 +953,102 @@ def recreate_task_for(state: dict[str, Any], agent_id: str) -> None:
             task["recreated"] = True
 
 
+def dispatch_restart(state: dict[str, Any], target: dict[str, Any]) -> bool:
+    """
+    Escalation path: all heal attempts on the original branch are exhausted.
+    Decision: RESTART — spin up a new agent on a clean branch with the same task.
+    If restarts are also exhausted: ABANDON — mark the task and notify humans.
+
+    Escalation ladder:
+      worker fails → heal (same branch, up to HEAL_MAX_ATTEMPTS)
+                   → restart (new branch, up to RESTART_MAX_ATTEMPTS)
+                   → abandon (human review required)
+    """
+    restarts = state.setdefault("restarts", {})
+    done = int(restarts.get(target["id"], 0))
+    if done >= RESTART_MAX_ATTEMPTS or not budget_ok(state):
+        target["status"] = "abandoned"
+        reason = "budget exhausted" if not budget_ok(state) else f"{done} restart(s) also failed"
+        apcall(
+            state, "master", target["id"], "task.abandon",
+            {"reason": reason, "branch": target.get("branch")},
+            f"Task {target['id']} abandoned after all heal + restart attempts ({reason}). Human review needed.",
+        )
+        recreate_task_for(state, target["id"])
+        return False
+    workspace = active_workspace()
+    try:
+        jcode = resolve_jcode_binary()
+    except RuntimeError:
+        return False
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    restart_index = done + 1
+    new_id = f"restart-{target['id']}-{restart_index}"
+    new_branch = f"jarvis/restart/{target['id']}/{restart_index}"
+    new_worktree = WORKTREE_ROOT / "restarts" / new_id
+    try:
+        run(["git", "worktree", "add", "-B", new_branch, str(new_worktree), "HEAD"], cwd=workspace)
+    except Exception:
+        return False
+    restarts[target["id"]] = restart_index
+    spend_budget(state)
+    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
+    settings = load_settings(include_secrets=True)
+    selection = select_healer_model(settings)
+    model_args, model_env, provider_label, model_label = launch_args_for(selection)
+    whiteboard = state.get("whiteboard") or {}
+    headline = mission_headline(str(whiteboard.get("mission") or target.get("task") or ""))
+    prompt = worker_prompt(
+        {**target, "id": new_id, "role": target.get("role", "Worker"), "task": target.get("task", "")},
+        headline,
+        [],
+    )
+    log_path = LOG_DIR / f"{new_id}.log"
+    log_file = log_path.open("w", encoding="utf-8")
+    child_env = os.environ.copy()
+    child_env.update(model_env)
+    process = subprocess.Popen(
+        [jcode, *extra_args, *model_args, "run", prompt],
+        cwd=str(new_worktree),
+        env=child_env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    PROCESSES[new_id] = process
+    restart_agent = {
+        "id": new_id,
+        "role": target.get("role", "Worker"),
+        "kind": "restart",
+        "restarts": target["id"],
+        "task": target.get("task", ""),
+        "status": "running",
+        "branch": new_branch,
+        "base_branch": target.get("base_branch"),
+        "worktree": str(new_worktree),
+        "log": str(log_path),
+        "provider": provider_label,
+        "model": model_label,
+        "pid": process.pid,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    state.setdefault("agents", []).append(restart_agent)
+    apcall(
+        state, "master", new_id, "task.restart",
+        {"original": target["id"], "new_branch": new_branch, "attempt": restart_index},
+        f"Master restarted {target['id']} on a clean branch ({new_branch}) after heals exhausted.",
+    )
+    return True
+
+
 def maybe_dispatch_healer(state: dict[str, Any], target: dict[str, Any]) -> None:
-    """The healing agent keeps watch and steps in when a worker cannot succeed."""
-    if target.get("kind") == "healer":
+    """
+    Escalation entry point. Routes failures through the repair ladder:
+      1. Heal on the same branch (up to HEAL_MAX_ATTEMPTS)
+      2. Restart on a clean branch (dispatch_restart, up to RESTART_MAX_ATTEMPTS)
+      3. Abandon — human review required
+    """
+    if target.get("kind") in ("healer", "restart"):
         return
     healing = state.setdefault("healing", {"enabled": True, "attempts": {}})
     if not healing.get("enabled", True):
@@ -951,15 +1057,12 @@ def maybe_dispatch_healer(state: dict[str, Any], target: dict[str, Any]) -> None
     attempts = healing.setdefault("attempts", {})
     done = int(attempts.get(target["id"], 0))
     if done >= HEAL_MAX_ATTEMPTS:
-        recreate_task_for(state, target["id"])
         apcall(
-            state,
-            APCALL_HEAL_BUS,
-            target["id"],
-            "heal.giveup",
+            state, APCALL_HEAL_BUS, target["id"], "heal.giveup",
             {"attempts": done},
-            f"Self-Healing Agent exhausted {done} repair attempts on {target['id']}; task recreated for pickup.",
+            f"All {done} heal attempts on {target['id']} exhausted — escalating to restart.",
         )
+        dispatch_restart(state, target)
         return
     for other in state.get("agents", []):
         if other.get("kind") == "healer" and other.get("heals") == target["id"] and other.get("status") in ("starting", "running"):
@@ -1053,16 +1156,22 @@ def dispatch_qa(state: dict[str, Any], target: dict[str, Any], attempt: int) -> 
     settings = load_settings(include_secrets=True)
     selection = select_healer_model(settings)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
-    if live_process_count() >= MAX_CONCURRENT_AGENTS:
+    if not budget_ok(state):
         apcall(
-            state,
-            APCALL_QA_BUS,
-            target["id"],
-            "qa.queued",
-            {"reason": f"global cap {MAX_CONCURRENT_AGENTS} reached"},
-            f"QA for {target['id']} queued — at concurrent-agent ceiling ({MAX_CONCURRENT_AGENTS}).",
+            state, APCALL_QA_BUS, target["id"], "qa.budget_exhausted",
+            {"budget": state.get("budget")},
+            f"QA for {target['id']} blocked — mission agent budget exhausted.",
         )
         return False
+    if live_process_count() >= MAX_CONCURRENT_AGENTS:
+        DISPATCH_QUEUE.append({"kind": "qa", "target_id": target["id"], "attempt": attempt})
+        apcall(
+            state, APCALL_QA_BUS, target["id"], "qa.queued",
+            {"queue_depth": len(DISPATCH_QUEUE)},
+            f"QA for {target['id']} queued (slot will open when an agent finishes).",
+        )
+        return False
+    spend_budget(state)
     qa_id = f"qa-{target['id']}-{attempt}"
     qa_log = LOG_DIR / f"{qa_id}.log"
     whiteboard = state.get("whiteboard") or {}
@@ -1176,8 +1285,18 @@ def handle_qa_exit(state: dict[str, Any], qa_agent: dict[str, Any], code: int) -
 
 
 def live_process_count() -> int:
-    """Count jcode processes currently running (not yet exited)."""
     return sum(1 for p in PROCESSES.values() if p.poll() is None)
+
+
+def budget_ok(state: dict[str, Any]) -> bool:
+    """False when the mission has already spawned its maximum allowed total agents."""
+    b = state.get("budget")
+    return not b or int(b.get("spent", 0)) < int(b.get("total", 9999))
+
+
+def spend_budget(state: dict[str, Any]) -> None:
+    b = state.setdefault("budget", {"total": 9999, "spent": 0})
+    b["spent"] = int(b.get("spent", 0)) + 1
 
 
 def poll_processes(state: dict[str, Any]) -> None:
@@ -1223,9 +1342,50 @@ def poll_processes(state: dict[str, Any]) -> None:
             )
             maybe_dispatch_healer(state, agent)
         changed = True
+    # Drain the queue: slots freed by exiting agents may unblock pending healer/QA jobs.
+    while DISPATCH_QUEUE and live_process_count() < MAX_CONCURRENT_AGENTS:
+        job = DISPATCH_QUEUE.pop(0)
+        t = agent_by_id(state, job["target_id"])
+        if not t:
+            continue
+        if job["kind"] == "healer":
+            dispatch_healer(state, t, job["attempt"])
+        elif job["kind"] == "qa":
+            dispatch_qa(state, t, job["attempt"])
+        changed = True
     if changed:
         sync_tasks(state)
         save_state(state)
+
+
+def killswitch() -> dict[str, Any]:
+    """
+    Emergency stop: terminate every running agent, clear the dispatch queue,
+    and mark all in-flight agents as killed. One button — everything stops.
+    """
+    with STATE_LOCK:
+        state = load_state()
+        killed = 0
+        for agent_id, process in list(PROCESSES.items()):
+            if process.poll() is None:
+                try:
+                    process.terminate()
+                except OSError:
+                    pass
+                killed += 1
+        PROCESSES.clear()
+        queued = len(DISPATCH_QUEUE)
+        DISPATCH_QUEUE.clear()
+        for agent in state.get("agents", []):
+            if agent.get("status") in ("running", "starting", "healing", "testing"):
+                agent["status"] = "killed"
+        apcall(
+            state, "master", "all", "swarm.killswitch",
+            {"killed": killed, "queue_cleared": queued},
+            f"Kill-switch activated: {killed} agent(s) terminated, {queued} queued job(s) cleared.",
+        )
+        save_state(state)
+        return hydrate_state(state)
 
 
 def choose_plan(task: str, max_agents: int = 12) -> list[dict[str, str]]:
@@ -1493,6 +1653,13 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
         plan = clean_plan(plan)
         if not plan:
             raise RuntimeError("Plan is empty.")
+        # Set a mission budget: total agents that can be spawned (workers + QA + healers + restarts).
+        # Workers count as "spent" immediately; the rest are drawn down as they dispatch.
+        state["budget"] = {
+            "total": len(plan) * MISSION_AGENT_BUDGET_MULTIPLIER,
+            "spent": len(plan),
+            "mission_workers": len(plan),
+        }
         # The master compacts the mission into one shared headline; each worker
         # gets the headline + its own objective instead of the full concept.
         headline = mission_headline(task)
@@ -2188,6 +2355,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not agent_id:
                     raise RuntimeError("Missing agent id.")
                 self.send_json(stop_agent(agent_id))
+                return
+            if self.path == "/api/killswitch":
+                self.send_json(killswitch())
                 return
             if self.path == "/api/settings":
                 self.send_json(save_settings(body))

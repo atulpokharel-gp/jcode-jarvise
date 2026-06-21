@@ -1488,6 +1488,47 @@ button.primary::after {
   flex-wrap: wrap;
 }
 
+.kill-btn {
+  background: rgba(255, 60, 60, 0.15);
+  border: 1px solid rgba(255, 60, 60, 0.5);
+  color: #ff6060;
+  padding: 6px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  font-weight: 600;
+  cursor: pointer;
+  letter-spacing: 0.04em;
+  transition: background 0.15s, border-color 0.15s;
+}
+.kill-btn:hover {
+  background: rgba(255, 60, 60, 0.3);
+  border-color: rgba(255, 60, 60, 0.9);
+}
+
+.budget-bar {
+  display: grid;
+  gap: 4px;
+  margin-top: 8px;
+  padding: 8px 12px;
+  border: 1px solid rgba(124, 199, 255, 0.18);
+  border-radius: 6px;
+  background: rgba(12, 20, 36, 0.6);
+}
+.budget-track {
+  height: 4px;
+  border-radius: 2px;
+  background: rgba(255,255,255,0.08);
+  overflow: hidden;
+}
+.budget-fill {
+  height: 100%;
+  border-radius: 2px;
+  background: var(--accent, #7cc7ff);
+  transition: width 0.4s ease;
+}
+.budget-fill.budget-warn { background: #f5a623; }
+.budget-fill.budget-danger { background: #ff6060; }
+
 .healing-board {
   display: grid;
   gap: 8px;

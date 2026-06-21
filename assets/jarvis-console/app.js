@@ -51,8 +51,13 @@ const apcallSummary = document.querySelector("#apcallSummary");
 const healingStatus = document.querySelector("#healingStatus");
 const healToggle = document.querySelector("#healToggle");
 const qaToggle = document.querySelector("#qaToggle");
+const killswitchButton = document.querySelector("#killswitchButton");
 const healWatch = document.querySelector("#healWatch");
 const healingBoard = document.querySelector("#healingBoard");
+const budgetBar = document.querySelector("#budgetBar");
+const budgetLabel = document.querySelector("#budgetLabel");
+const budgetFill = document.querySelector("#budgetFill");
+const queueLabel = document.querySelector("#queueLabel");
 const whiteboardModal = document.querySelector("#whiteboardModal");
 const closeWhiteboard = document.querySelector("#closeWhiteboard");
 const wbMission = document.querySelector("#wbMission");
@@ -772,6 +777,23 @@ function renderHealing(healing, agents) {
     });
 }
 
+function renderBudget(state) {
+  const budget = state.budget;
+  const queueDepth = state.dispatch_queue_depth || 0;
+  if (!budgetBar) return;
+  if (!budget) { budgetBar.hidden = true; return; }
+  budgetBar.hidden = false;
+  const spent = budget.spent || 0;
+  const total = budget.total || 1;
+  const pct = Math.min(100, Math.round((spent / total) * 100));
+  if (budgetLabel) budgetLabel.textContent = `Budget: ${spent} / ${total} agents used`;
+  if (budgetFill) {
+    budgetFill.style.width = `${pct}%`;
+    budgetFill.className = `budget-fill${pct >= 90 ? " budget-danger" : pct >= 70 ? " budget-warn" : ""}`;
+  }
+  if (queueLabel) queueLabel.textContent = queueDepth ? `Queue: ${queueDepth} pending` : "Queue: clear";
+}
+
 function taskStatusLabel(status) {
   const map = {
     todo: "to do",
@@ -845,6 +867,18 @@ function openWhiteboard() {
 
 function closeWhiteboardModal() {
   whiteboardModal.hidden = true;
+}
+
+async function triggerKillswitch() {
+  if (!confirm("Kill ALL agents and clear the dispatch queue? This cannot be undone.")) return;
+  setBusy(true, "Kill-switch engaged");
+  try {
+    const state = await api("/api/killswitch", { method: "POST", body: JSON.stringify({}) });
+    renderAll(state);
+    speak("All agents terminated.");
+  } finally {
+    setBusy(false);
+  }
 }
 
 async function toggleHealing() {
@@ -1035,6 +1069,7 @@ function renderAll(state) {
   renderApcall(state.apcall || []);
   renderHealing(state.healing, state.agents || []);
   renderQA(state.qa, state.agents || []);
+  renderBudget(state);
   renderWhiteboard(state.whiteboard);
   renderConsoleDeck(state.agents || []);
   renderLiveActivity(state);
@@ -1386,6 +1421,7 @@ talkBackButton.addEventListener("click", () => setTalkBack(!talkBackEnabled));
 settingsButton.addEventListener("click", () => openSettings().catch((error) => alert(error.message)));
 healToggle.addEventListener("click", () => toggleHealing().catch((error) => alert(error.message)));
 qaToggle.addEventListener("click", () => toggleQa().catch((error) => alert(error.message)));
+if (killswitchButton) killswitchButton.addEventListener("click", () => triggerKillswitch().catch((error) => alert(error.message)));
 closeWhiteboard.addEventListener("click", () => closeWhiteboardModal());
 wbNoteButton.addEventListener("click", () => postWhiteboardNote().catch((error) => alert(error.message)));
 wbNoteInput.addEventListener("keydown", (event) => {
