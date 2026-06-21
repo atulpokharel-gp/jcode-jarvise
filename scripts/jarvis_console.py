@@ -44,6 +44,7 @@ MEMORY_DB           = STATE_DIR / "memory.db"
 TEMPLATES_FILE      = STATE_DIR / "templates.json"
 COST_DB             = STATE_DIR / "cost.db"
 MCP_CONNECTORS_FILE = STATE_DIR / "mcp_connectors.json"
+HISTORY_DB          = STATE_DIR / "history.db"
 SERVER_PORT = DEFAULT_PORT  # updated in main() to reflect --port flag
 
 MCP_CATALOG: list[dict[str, Any]] = [
@@ -2039,6 +2040,83 @@ def cost_summary(mission_id: str = "") -> dict[str, Any]:
     }
 
 
+# ── Mission history ──────────────────────────────────────────────────────────
+
+def history_init() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(HISTORY_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS missions (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                mission_id    TEXT    NOT NULL,
+                title         TEXT    NOT NULL DEFAULT '',
+                agents_total  INTEGER NOT NULL DEFAULT 0,
+                agents_done   INTEGER NOT NULL DEFAULT 0,
+                branches      TEXT    NOT NULL DEFAULT '[]',
+                cost_usd      REAL    NOT NULL DEFAULT 0.0,
+                tokens_in     INTEGER NOT NULL DEFAULT 0,
+                tokens_out    INTEGER NOT NULL DEFAULT 0,
+                pr_url        TEXT    NOT NULL DEFAULT '',
+                merged_at     TEXT    NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+def history_record(state: dict[str, Any], merged_branches: list[str], pr_url: str = "") -> None:
+    cost = cost_summary(state.get("mission_id", ""))
+    agents = state.get("agents", [])
+    done = [a for a in agents if a.get("status") in ("complete", "merged")]
+    title = str((state.get("whiteboard") or {}).get("mission") or "")[:200]
+    with sqlite3.connect(HISTORY_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """INSERT INTO missions
+               (mission_id,title,agents_total,agents_done,branches,cost_usd,tokens_in,tokens_out,pr_url,merged_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+            (
+                str(state.get("mission_id", "")),
+                title,
+                len(agents),
+                len(done),
+                json.dumps(merged_branches),
+                cost["cost_usd"],
+                cost["input_tokens"],
+                cost["output_tokens"],
+                pr_url,
+                datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            ),
+        )
+        conn.commit()
+
+
+def history_list(limit: int = 40) -> list[dict[str, Any]]:
+    if not HISTORY_DB.exists():
+        return []
+    with sqlite3.connect(HISTORY_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        rows = conn.execute(
+            "SELECT * FROM missions ORDER BY id DESC LIMIT ?", (limit,)
+        ).fetchall()
+    result = []
+    for r in rows:
+        result.append({
+            "id":           r["id"],
+            "mission_id":   r["mission_id"],
+            "title":        r["title"],
+            "agents_total": r["agents_total"],
+            "agents_done":  r["agents_done"],
+            "branches":     json.loads(r["branches"] or "[]"),
+            "cost_usd":     r["cost_usd"],
+            "tokens_in":    r["tokens_in"],
+            "tokens_out":   r["tokens_out"],
+            "pr_url":       r["pr_url"],
+            "merged_at":    r["merged_at"],
+        })
+    return result
+
+
 TOKEN_RE = re.compile(
     r"(?:input[_ ]tokens?[:\s]+(\d+).*?output[_ ]tokens?[:\s]+(\d+)"
     r"|tokens?[:\s]+(\d+)\s*/\s*(\d+))",
@@ -2994,6 +3072,11 @@ def merge_finished(auto_pr: bool = False) -> dict[str, Any]:
                 pr_result = auto_pr_from_state(state)
                 if pr_result.get("ok"):
                     state["last_pr_url"] = pr_result["url"]
+            if merged:
+                try:
+                    history_record(state, merged, state.get("last_pr_url", ""))
+                except Exception:
+                    pass
         save_state(state)
         result = hydrate_state(state)
         if pr_result:
@@ -3438,6 +3521,10 @@ class Handler(BaseHTTPRequestHandler):
                 mission_id = parse_qs(parsed.query).get("mission", [""])[0]
                 self.send_json(cost_summary(mission_id))
                 return
+            if parsed.path == "/api/history":
+                limit = int(parse_qs(parsed.query).get("limit", ["40"])[0])
+                self.send_json({"history": history_list(min(limit, 200))})
+                return
             if parsed.path == "/api/mcp-connectors/catalog":
                 self.send_json({"catalog": MCP_CATALOG})
                 return
@@ -3698,6 +3785,7 @@ def main() -> int:
     ensure_dirs()
     memory_init()
     cost_init()
+    history_init()
     pin = ensure_pin()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[jarvis] Local console : http://{args.host}:{args.port}")

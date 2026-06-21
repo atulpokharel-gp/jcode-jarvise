@@ -2602,6 +2602,47 @@ mcpConfigTransport?.addEventListener("change", updateMcpTransport);
 
 loadMcpHub().catch(() => {});
 
+// ── Mission History ────────────────────────────────────────────────────────────
+
+const historyList       = document.querySelector("#historyList");
+const historyRefreshBtn = document.querySelector("#historyRefreshBtn");
+
+function renderHistory(missions) {
+  if (!historyList) return;
+  if (!missions || !missions.length) {
+    historyList.innerHTML = '<p class="subtle">No completed missions yet. Merge a swarm to record the first entry.</p>';
+    return;
+  }
+  historyList.innerHTML = missions.map(m => {
+    const date = new Date(m.merged_at).toLocaleString();
+    const branches = (m.branches || []).length;
+    const costColor = m.cost_usd > 1 ? "var(--amber)" : m.cost_usd > 0.1 ? "var(--cyan)" : "var(--muted)";
+    const prLink = m.pr_url ? `<a class="hist-pr" href="${escapeHtml(m.pr_url)}" target="_blank" rel="noopener">PR ↗</a>` : "";
+    const title = m.title ? escapeHtml(m.title.slice(0, 90)) : "<em>untitled</em>";
+    return `
+      <div class="hist-row">
+        <span class="hist-date">${date}</span>
+        <span class="hist-title">${title}</span>
+        <span class="hist-stat">${m.agents_done}/${m.agents_total} agents</span>
+        <span class="hist-stat">${branches} branch${branches !== 1 ? "es" : ""}</span>
+        <span class="hist-cost" style="color:${costColor}">$${m.cost_usd.toFixed(4)}</span>
+        <span class="hist-tokens">${((m.tokens_in + m.tokens_out) / 1000).toFixed(1)}k tok</span>
+        ${prLink}
+      </div>`;
+  }).join("");
+}
+
+async function loadHistory() {
+  try {
+    const res = await fetch("/api/history").then(r => r.json());
+    renderHistory(res.history || []);
+  } catch (_) {}
+}
+
+historyRefreshBtn?.addEventListener("click", () => loadHistory().catch(() => {}));
+loadHistory().catch(() => {});
+setInterval(() => loadHistory().catch(() => {}), 30000);
+
 // ── End MCP Connector Hub ─────────────────────────────────────────────────────
 
 setupVoice();

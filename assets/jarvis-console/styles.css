@@ -1551,6 +1551,43 @@ pre {
 }
 .mem-payload pre { margin: 6px 0 0; min-height: auto; font-size: 11px; max-height: 120px; }
 
+/* ── Mission History ─────────────────────────────────────────── */
+.mission-history {
+  grid-column: 1 / -1;
+  background: rgba(0,240,255,0.015);
+  border: 1px solid rgba(0,240,255,0.08);
+  border-radius: 12px;
+  padding: 20px 24px 24px;
+}
+.history-list { display: flex; flex-direction: column; gap: 2px; margin-top: 10px; }
+.hist-row {
+  display: grid;
+  grid-template-columns: 160px 1fr 100px 90px 80px 70px auto;
+  align-items: center; gap: 10px;
+  padding: 8px 12px; border-radius: 6px;
+  font-family: 'Share Tech Mono', monospace; font-size: 11px;
+  border: 1px solid transparent;
+  transition: background 0.15s, border-color 0.15s;
+}
+.hist-row:hover { background: rgba(0,240,255,0.04); border-color: rgba(0,240,255,0.12); }
+.hist-date  { color: var(--muted); white-space: nowrap; }
+.hist-title { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hist-stat  { color: var(--muted); text-align: right; }
+.hist-cost  { font-weight: 700; text-align: right; }
+.hist-tokens { color: var(--muted); text-align: right; }
+.hist-pr {
+  font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.08em; padding: 3px 8px; border-radius: 4px;
+  border: 1px solid rgba(0,255,157,0.3); color: var(--green);
+  text-decoration: none; white-space: nowrap;
+  transition: background 0.15s, border-color 0.15s;
+}
+.hist-pr:hover { background: rgba(0,255,157,0.1); border-color: var(--green); }
+@media (max-width: 880px) {
+  .hist-row { grid-template-columns: 1fr 1fr; }
+  .hist-date, .hist-tokens { display: none; }
+}
+
 /* ── MCP Connector Hub ──────────────────────────────────────── */
 .mcp-hub {
   grid-column: 1 / -1;
