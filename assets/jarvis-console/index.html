@@ -77,11 +77,29 @@
           <span>Self-Heal</span>
           <strong id="metricHealing">0</strong>
         </article>
+        <article class="metric-cost">
+          <span>Mission Cost</span>
+          <strong id="metricCost">$0.00</strong>
+        </article>
+        <article>
+          <span>Tokens In/Out</span>
+          <strong id="metricTokens">0 / 0</strong>
+        </article>
+        <article>
+          <span>Pending Workers</span>
+          <strong id="metricPending">0</strong>
+        </article>
       </section>
 
       <section class="command-deck">
         <div class="task-box">
           <p class="eyebrow">Mission Injection</p>
+          <div class="template-row">
+            <select id="templateSelect">
+              <option value="">— Load template —</option>
+            </select>
+            <button id="saveTemplateBtn" class="icon-btn" title="Save current prompt as template">💾</button>
+          </div>
           <label for="task">Payload</label>
           <textarea
             id="task"
@@ -96,6 +114,12 @@
           </div>
           <div class="controls">
             <button id="launchButton" class="primary launch-button">Launch Swarm</button>
+            <button id="diffPreviewBtn">Preview Diff</button>
+            <button id="mergeBtn">Merge All</button>
+            <button id="mergePrBtn" class="primary">Merge + Create PR</button>
+          </div>
+          <div id="prLinkBar" class="pr-link-bar" hidden>
+            <span>PR: </span><a id="prLink" href="#" target="_blank" rel="noopener"></a>
           </div>
           <div class="planner-controls">
             <label for="agentLimit">Agents <span id="agentLimitValue">6</span></label>
@@ -275,6 +299,7 @@
           <h2>Worker Terminals</h2>
           <div class="head-actions">
             <span id="agentCount" class="badge">0 active</span>
+            <button id="timelineBtn">Timeline</button>
             <button id="consolesButton">Open Consoles</button>
           </div>
         </div>
@@ -389,12 +414,48 @@
 
         <div id="providerSettings" class="provider-settings"></div>
 
+        <div class="settings-section">
+          <h3 class="settings-group-head">Notifications</h3>
+          <label for="webhookUrl">Webhook URL (POST on mission complete / fail)</label>
+          <input id="webhookUrl" type="url" placeholder="https://hooks.slack.com/…" />
+          <button id="notifyPermBtn">Enable Browser Notifications</button>
+        </div>
+
         <div class="controls">
           <button id="saveSettings" class="primary">Save Settings</button>
           <button id="reloadSettings">Reload</button>
         </div>
       </div>
     </div>
+
+    <!-- Diff preview modal -->
+    <div id="diffModal" class="modal" hidden>
+      <div class="modal-panel diff-panel">
+        <header class="modal-head">
+          <div>
+            <p class="eyebrow">Pre-merge review</p>
+            <h2>Branch Diff Preview</h2>
+          </div>
+          <button id="closeDiffModal">Close</button>
+        </header>
+        <div id="diffContent" class="diff-content"></div>
+      </div>
+    </div>
+
+    <!-- Timeline modal -->
+    <div id="timelineModal" class="modal" hidden>
+      <div class="modal-panel timeline-panel">
+        <header class="modal-head">
+          <div>
+            <p class="eyebrow">Mission replay</p>
+            <h2>Agent Timeline</h2>
+          </div>
+          <button id="closeTimelineModal">Close</button>
+        </header>
+        <div id="timelineContent" class="timeline-content"></div>
+      </div>
+    </div>
+
     <script src="/app.js"></script>
   </body>
 </html>

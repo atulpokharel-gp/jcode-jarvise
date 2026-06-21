@@ -82,6 +82,27 @@ const copyUrlBtn = document.querySelector("#copyUrlBtn");
 const revealPinBtn = document.querySelector("#revealPinBtn");
 const resetPinBtn = document.querySelector("#resetPinBtn");
 
+// New feature refs
+const templateSelect    = document.querySelector("#templateSelect");
+const saveTemplateBtn   = document.querySelector("#saveTemplateBtn");
+const diffPreviewBtn    = document.querySelector("#diffPreviewBtn");
+const mergeBtn          = document.querySelector("#mergeBtn");
+const mergePrBtn        = document.querySelector("#mergePrBtn");
+const prLinkBar         = document.querySelector("#prLinkBar");
+const prLink            = document.querySelector("#prLink");
+const metricCost        = document.querySelector("#metricCost");
+const metricTokens      = document.querySelector("#metricTokens");
+const metricPending     = document.querySelector("#metricPending");
+const webhookUrl        = document.querySelector("#webhookUrl");
+const notifyPermBtn     = document.querySelector("#notifyPermBtn");
+const diffModal         = document.querySelector("#diffModal");
+const closeDiffModal    = document.querySelector("#closeDiffModal");
+const diffContent       = document.querySelector("#diffContent");
+const timelineModal     = document.querySelector("#timelineModal");
+const closeTimelineModal = document.querySelector("#closeTimelineModal");
+const timelineContent   = document.querySelector("#timelineContent");
+const timelineBtn       = document.querySelector("#timelineBtn");
+
 let currentPlan = [];
 let latestAgents = [];
 let latestSummary = {};
@@ -279,6 +300,7 @@ function renderMetrics(state) {
   metricRunning.textContent = summary.running || 0;
   metricComplete.textContent = summary.complete || 0;
   metricConflict.textContent = summary.conflict || 0;
+  if (metricPending) metricPending.textContent = state.pending_workers || 0;
   const dirty = Boolean(state.root_dirty);
   const missingJcode = state.jcode_available === false;
   const providers = state.settings?.providers || {};
@@ -1137,6 +1159,7 @@ function renderAll(state) {
   renderWhiteboard(state.whiteboard);
   renderConsoleDeck(state.agents || []);
   renderLiveActivity(state);
+  renderCost(state);
   updateMainButtons();
 }
 
@@ -1275,6 +1298,7 @@ function renderSettings(settings) {
 async function openSettings() {
   const settings = await api("/api/settings");
   renderSettings(settings);
+  if (webhookUrl) webhookUrl.value = settings.notifications?.webhook_url || "";
   settingsModal.hidden = false;
 }
 
@@ -1287,7 +1311,11 @@ function collectSettings() {
       models: textToModels(card.querySelector("[data-models]").value),
     };
   });
-  return { strategy: strategySelect.value, providers };
+  return {
+    strategy: strategySelect.value,
+    providers,
+    notifications: { webhook_url: webhookUrl?.value?.trim() || "" },
+  };
 }
 
 async function persistSettings() {
@@ -1531,6 +1559,170 @@ document.querySelectorAll("[data-template]").forEach((button) => {
   });
 });
 
+// ── Cost / token meter ────────────────────────────────────────────────────
+function renderCost(state) {
+  const cost = state.cost || {};
+  if (metricCost)   metricCost.textContent   = `$${(cost.cost_usd || 0).toFixed(4)}`;
+  if (metricTokens) metricTokens.textContent =
+    `${(cost.input_tokens || 0).toLocaleString()} / ${(cost.output_tokens || 0).toLocaleString()}`;
+}
+
+// ── Mission templates ─────────────────────────────────────────────────────
+async function loadTemplates() {
+  const tpls = await api("/api/templates");
+  if (!templateSelect) return;
+  templateSelect.innerHTML = '<option value="">— Load template —</option>';
+  tpls.forEach((t) => {
+    const o = document.createElement("option");
+    o.value = t.prompt;
+    o.textContent = t.name;
+    o.dataset.id = t.id;
+    templateSelect.appendChild(o);
+  });
+}
+
+if (templateSelect) {
+  templateSelect.addEventListener("change", () => {
+    if (templateSelect.value) taskInput.value = templateSelect.value;
+  });
+}
+
+if (saveTemplateBtn) {
+  saveTemplateBtn.addEventListener("click", async () => {
+    const prompt = taskInput.value.trim();
+    if (!prompt) { alert("Enter a mission prompt first."); return; }
+    const name = window.prompt("Template name:");
+    if (!name) return;
+    await api("/api/templates", {
+      method: "POST",
+      body: JSON.stringify({ name, prompt }),
+    });
+    loadTemplates().catch(() => {});
+  });
+}
+
+// ── Browser notifications ─────────────────────────────────────────────────
+function tryBrowserNotify(title, body) {
+  if (Notification.permission === "granted") {
+    new Notification(title, { body, icon: "/favicon.ico" });
+  }
+}
+
+if (notifyPermBtn) {
+  notifyPermBtn.addEventListener("click", () => {
+    Notification.requestPermission().then((p) => {
+      notifyPermBtn.textContent = p === "granted" ? "Notifications enabled ✓" : "Permission denied";
+    });
+  });
+}
+
+// Patch renderAll to fire browser notify on mission complete / agent fail
+const _origRenderAll = renderAll;  // eslint-disable-line no-use-before-define
+// (renderAll already defined above; we hook into renderEvents & mergeFinished instead)
+
+// ── Diff preview ──────────────────────────────────────────────────────────
+async function openDiffPreview() {
+  diffContent.innerHTML = '<p class="subtle">Loading diffs…</p>';
+  diffModal.hidden = false;
+  const diffs = await api("/api/diff");
+  if (!diffs.length) {
+    diffContent.innerHTML = '<p class="subtle">No completed unmerged branches to preview.</p>';
+    return;
+  }
+  diffContent.innerHTML = diffs.map((d) => `
+    <div class="diff-agent">
+      <div class="diff-agent-head">
+        <span class="diff-role">${escapeHtml(d.role)}</span>
+        <span class="diff-branch">${escapeHtml(d.branch)}</span>
+      </div>
+      <pre class="diff-stat">${escapeHtml(d.stat || '(no changes)')}</pre>
+      <details class="diff-details">
+        <summary>Full diff</summary>
+        <pre class="diff-full">${escapeHtml(d.diff || '(empty)')}</pre>
+      </details>
+    </div>
+  `).join("");
+}
+
+if (diffPreviewBtn)  diffPreviewBtn.addEventListener("click",  () => openDiffPreview().catch((e) => alert(e.message)));
+if (closeDiffModal)  closeDiffModal.addEventListener("click",  () => { diffModal.hidden = true; });
+diffModal?.addEventListener("click", (e) => { if (e.target === diffModal) diffModal.hidden = true; });
+
+// ── Merge buttons ─────────────────────────────────────────────────────────
+async function doMerge(autoPr = false) {
+  if (!confirm(autoPr ? "Merge all complete branches and open a GitHub PR?" : "Merge all complete branches?")) return;
+  setBusy(true, "Merging");
+  try {
+    const state = await api("/api/merge", {
+      method: "POST",
+      body: JSON.stringify({ auto_pr: autoPr }),
+    });
+    renderAll(state);
+    if (state.pr?.ok && prLink && prLinkBar) {
+      prLink.href = state.pr.url;
+      prLink.textContent = state.pr.url;
+      prLinkBar.hidden = false;
+      tryBrowserNotify("Jarvis — PR Created", state.pr.url);
+    }
+    tryBrowserNotify("Jarvis — Mission Merged", `${(state.agents || []).filter(a => a.merged).length} branches merged`);
+  } finally {
+    setBusy(false);
+  }
+}
+
+if (mergeBtn)   mergeBtn.addEventListener("click",   () => doMerge(false).catch((e) => alert(e.message)));
+if (mergePrBtn) mergePrBtn.addEventListener("click", () => doMerge(true).catch((e) => alert(e.message)));
+
+// ── Timeline view ─────────────────────────────────────────────────────────
+function openTimeline() {
+  const agents = latestAgents.filter((a) => a.started_at);
+  if (!agents.length) {
+    timelineContent.innerHTML = '<p class="subtle">No agents have started yet.</p>';
+    timelineModal.hidden = false;
+    return;
+  }
+  const starts = agents.map((a) => new Date(a.started_at).getTime());
+  const ends   = agents.map((a) => a.ended_at ? new Date(a.ended_at).getTime() : Date.now());
+  const tMin   = Math.min(...starts);
+  const tMax   = Math.max(...ends);
+  const span   = Math.max(tMax - tMin, 1000);
+
+  const statusColors = {
+    running: "var(--cyan)", complete: "var(--green)", failed: "var(--red)",
+    healing: "var(--heal)", testing: "var(--blue)", conflict: "var(--red)",
+    killed: "var(--muted)", starting: "var(--amber)",
+  };
+
+  timelineContent.innerHTML = `
+    <div class="timeline-grid">
+      ${agents.map((a) => {
+        const s = new Date(a.started_at).getTime();
+        const e = a.ended_at ? new Date(a.ended_at).getTime() : Date.now();
+        const left  = ((s - tMin) / span * 100).toFixed(1);
+        const width = Math.max(((e - s) / span * 100), 1).toFixed(1);
+        const color = statusColors[a.status] || "var(--muted)";
+        const dur   = Math.round((e - s) / 1000);
+        const cost  = a.cost_usd ? ` · $${a.cost_usd.toFixed(4)}` : "";
+        return `
+          <div class="tl-row">
+            <div class="tl-label" title="${escapeHtml(a.role)}">${escapeHtml((a.role || a.id).slice(0, 22))}</div>
+            <div class="tl-track">
+              <div class="tl-bar" style="left:${left}%;width:${width}%;background:${color};box-shadow:0 0 10px ${color}">
+                <span class="tl-bar-label">${dur}s${cost}</span>
+              </div>
+            </div>
+            <span class="tl-status" style="color:${color}">${a.status}</span>
+          </div>`;
+      }).join("")}
+    </div>
+  `;
+  timelineModal.hidden = false;
+}
+
+if (timelineBtn)          timelineBtn.addEventListener("click",           () => openTimeline());
+if (closeTimelineModal)   closeTimelineModal.addEventListener("click",    () => { timelineModal.hidden = true; });
+timelineModal?.addEventListener("click", (e) => { if (e.target === timelineModal) timelineModal.hidden = true; });
+
 // ── Central Agent Memory ──────────────────────────────────────────────────
 const memoryBoard    = document.getElementById("memoryBoard");
 const memoryCount    = document.getElementById("memoryCount");
@@ -1607,6 +1799,7 @@ loadMemory().catch(() => {});
 setupVoice();
 updateTalkBackUi();
 pollTunnel();
+loadTemplates().catch(() => {});
 refresh().catch((error) => {
   gitStatus.textContent = error.message;
   setBusy(false);

@@ -1119,6 +1119,110 @@ pre {
   94% { opacity: 0.6; }
 }
 
+/* ── Cost metric tile ────────────────────────────────────────── */
+.metric-cost strong {
+  color: var(--green);
+  text-shadow: 0 0 18px var(--glow-g);
+}
+
+/* ── Template row ────────────────────────────────────────────── */
+.template-row {
+  display: flex; gap: 8px; align-items: center; margin-bottom: 10px;
+}
+.template-row select { flex: 1; }
+
+/* ── PR link bar ─────────────────────────────────────────────── */
+.pr-link-bar {
+  padding: 8px 12px; margin-top: 8px;
+  border: 1px solid rgba(0,255,157,0.3); border-radius: 6px;
+  background: rgba(0,255,157,0.05); font-size: 12px;
+  font-family: 'Share Tech Mono', monospace;
+  display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+}
+.pr-link-bar a { color: var(--green); text-decoration: none; }
+.pr-link-bar a:hover { text-decoration: underline; }
+
+/* ── Settings section ────────────────────────────────────────── */
+.settings-section { margin-top: 20px; }
+.settings-group-head {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.16em;
+  text-transform: uppercase; color: var(--cyan); margin-bottom: 10px;
+  text-shadow: 0 0 10px var(--glow-c);
+}
+.settings-section input { width: 100%; margin-bottom: 10px; }
+
+/* ── Diff preview modal ──────────────────────────────────────── */
+.diff-panel {
+  width: min(1100px, 100%);
+  max-height: min(880px, calc(100vh - 44px)); overflow: auto;
+  padding: 20px;
+}
+.diff-content { display: grid; gap: 16px; margin-top: 16px; }
+.diff-agent {
+  border: 1px solid var(--border); border-radius: 8px;
+  background: rgba(0,8,14,0.9); overflow: hidden;
+}
+.diff-agent-head {
+  display: flex; gap: 12px; align-items: center;
+  padding: 10px 14px;
+  background: rgba(0,240,255,0.06);
+  border-bottom: 1px solid var(--border);
+}
+.diff-role   { font-weight: 700; color: var(--bright); font-size: 12px; }
+.diff-branch { font-family: 'Share Tech Mono', monospace; color: var(--cyan); font-size: 11px; }
+.diff-stat {
+  padding: 10px 14px; font-size: 11px; min-height: auto;
+  color: var(--text); white-space: pre-wrap;
+}
+.diff-details summary {
+  padding: 6px 14px; font-size: 10px; font-weight: 700;
+  letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); cursor: pointer;
+  border-top: 1px solid var(--border);
+}
+.diff-full {
+  padding: 10px 14px; font-size: 11px; min-height: auto;
+  max-height: 400px; overflow: auto; white-space: pre;
+  color: #c0eed8;
+  border-top: 1px solid var(--border);
+}
+
+/* ── Timeline modal ──────────────────────────────────────────── */
+.timeline-panel {
+  width: min(1000px, 100%);
+  max-height: min(800px, calc(100vh - 44px));
+  overflow: auto; padding: 20px;
+}
+.timeline-content { margin-top: 16px; }
+.timeline-grid { display: grid; gap: 10px; }
+.tl-row {
+  display: grid;
+  grid-template-columns: 180px 1fr 80px;
+  align-items: center; gap: 12px;
+}
+.tl-label {
+  font-size: 10px; font-weight: 700; letter-spacing: 0.06em;
+  color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.tl-track {
+  position: relative; height: 28px;
+  background: rgba(0,240,255,0.04); border-radius: 4px;
+  border: 1px solid var(--border); overflow: hidden;
+}
+.tl-bar {
+  position: absolute; top: 0; bottom: 0;
+  border-radius: 4px; display: flex; align-items: center;
+  padding: 0 6px; min-width: 4px;
+  transition: width 0.4s, left 0.4s;
+}
+.tl-bar-label {
+  font-family: 'Share Tech Mono', monospace; font-size: 9px;
+  color: rgba(0,0,0,0.8); white-space: nowrap; overflow: hidden;
+}
+.tl-status {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; text-align: right;
+}
+
 /* ── Central Memory ──────────────────────────────────────────── */
 .memory-section { margin-top: 18px; }
 

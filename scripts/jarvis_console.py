@@ -40,8 +40,23 @@ PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 DISPATCH_QUEUE: list[dict[str, Any]] = []  # pending healer/QA jobs waiting for a slot
 STATE_LOCK = threading.Lock()
 MEMORY_LOCK = threading.Lock()
-MEMORY_DB = STATE_DIR / "memory.db"
+MEMORY_DB       = STATE_DIR / "memory.db"
+TEMPLATES_FILE  = STATE_DIR / "templates.json"
+COST_DB         = STATE_DIR / "cost.db"
 SERVER_PORT = DEFAULT_PORT  # updated in main() to reflect --port flag
+
+# Model cost table: (input $/1M tokens, output $/1M tokens)
+MODEL_COSTS: dict[str, tuple[float, float]] = {
+    "claude-haiku-4.5":              (0.80,  4.00),
+    "claude-sonnet-4-6":             (3.00, 15.00),
+    "claude-opus-4-8":              (15.00, 75.00),
+    "gpt-5.4-mini":                  (0.15,  0.60),
+    "gpt-5.4":                       (2.50, 10.00),
+    "gpt-5.5":                      (10.00, 30.00),
+    "moonshotai/kimi-k2.6":          (0.40,  2.00),
+    "minimaxai/minimax-m3":          (0.60,  3.00),
+    "deepseek-ai/deepseek-v4-pro":   (2.00,  8.00),
+}
 # Remote access — PIN auth + Cloudflare Tunnel
 SESSION_TOKENS: dict[str, float] = {}  # token -> expiry unix timestamp
 SESSION_LOCK = threading.Lock()
@@ -290,6 +305,9 @@ def default_settings() -> dict[str, Any]:
             "pin": "",          # 6-digit PIN; auto-generated on first use
             "tunnel": "auto",   # "auto" = try cloudflared; "off" = disable
         },
+        "notifications": {
+            "webhook_url": "",  # POST on mission complete / agent fail / heal exhausted
+        },
         "devspace": {
             "enabled": False,
             "token": "",
@@ -525,9 +543,15 @@ def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
     state.setdefault("healing", {"enabled": True, "attempts": {}})
     state.setdefault("qa", {"enabled": True, "attempts": {}})
     state["dispatch_queue_depth"] = len(DISPATCH_QUEUE)
+    state["pending_workers"] = len(PENDING_WORKERS)
     if state.get("budget"):
         b = state["budget"]
         b["remaining"] = max(0, int(b.get("total", 0)) - int(b.get("spent", 0)))
+    try:
+        state["cost"] = cost_summary(state.get("mission_id", ""))
+    except Exception:
+        state["cost"] = {"input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0}
+    state["last_pr_url"] = state.get("last_pr_url", "")
     try:
         state["jcode_path"] = resolve_jcode_binary()
         state["jcode_available"] = True
@@ -1440,6 +1464,21 @@ def poll_processes(state: dict[str, Any]) -> None:
         PROCESSES.pop(agent["id"], None)
         agent["exit_code"] = code
         agent["ended_at"] = datetime.now().isoformat(timespec="seconds")
+        # Parse and record token usage from log
+        log_path = agent.get("log", "")
+        if log_path:
+            in_tok, out_tok = parse_tokens_from_log(log_path)
+            if in_tok or out_tok:
+                agent["input_tokens"]  = in_tok
+                agent["output_tokens"] = out_tok
+                model = agent.get("model", "")
+                in_r, out_r = MODEL_COSTS.get(model, (3.0, 15.0))
+                agent["cost_usd"] = round((in_tok / 1_000_000) * in_r + (out_tok / 1_000_000) * out_r, 4)
+                threading.Thread(
+                    target=cost_record,
+                    args=(agent["id"], state.get("mission_id", ""), model, in_tok, out_tok),
+                    daemon=True,
+                ).start()
         if agent.get("kind") == "healer":
             handle_healer_exit(state, agent, code)
         elif agent.get("kind") == "qa":
@@ -1454,9 +1493,10 @@ def poll_processes(state: dict[str, Any]) -> None:
                 {"branch": agent.get("branch")},
                 f"{agent['id']} completed on {agent.get('branch')}",
             )
-            # Master allocates a QA agent to verify the work before it is done.
             if not maybe_dispatch_qa(state, agent):
                 agent["status"] = "complete"
+            # Check if this completion unblocks any pending dependent workers
+            try_launch_pending(state)
         else:
             agent["status"] = "failed"
             apcall(
@@ -1797,6 +1837,329 @@ def memory_clear() -> dict[str, Any]:
     return {"ok": True, "deleted": count}
 
 
+# ── Mission templates ──────────────────────────────────────────────────────
+
+def templates_load() -> list[dict[str, Any]]:
+    if not TEMPLATES_FILE.exists():
+        return []
+    try:
+        return json.loads(TEMPLATES_FILE.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError):
+        return []
+
+
+def templates_save(tpls: list[dict[str, Any]]) -> None:
+    TEMPLATES_FILE.write_text(json.dumps(tpls, indent=2), encoding="utf-8")
+
+
+def template_add(name: str, prompt: str, tags: str = "") -> dict[str, Any]:
+    tpls = templates_load()
+    tid = f"tpl-{int(time.time())}"
+    tpls.insert(0, {"id": tid, "name": name[:120], "prompt": prompt[:4000], "tags": tags[:200], "ts": time.time()})
+    templates_save(tpls)
+    return {"ok": True, "id": tid}
+
+
+def template_delete(tid: str) -> dict[str, Any]:
+    tpls = [t for t in templates_load() if t.get("id") != tid]
+    templates_save(tpls)
+    return {"ok": True}
+
+
+# ── Cost / token tracker ────────────────────────────────────────────────────
+
+def cost_init() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(COST_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS usage (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                agent_id    TEXT    NOT NULL,
+                mission_id  TEXT    NOT NULL DEFAULT '',
+                model       TEXT    NOT NULL DEFAULT '',
+                input_tok   INTEGER NOT NULL DEFAULT 0,
+                output_tok  INTEGER NOT NULL DEFAULT 0,
+                cost_usd    REAL    NOT NULL DEFAULT 0.0,
+                ts          REAL    NOT NULL
+            )
+        """)
+        conn.commit()
+
+
+def cost_record(agent_id: str, mission_id: str, model: str, input_tok: int, output_tok: int) -> None:
+    in_rate, out_rate = MODEL_COSTS.get(model, (3.0, 15.0))
+    cost = (input_tok / 1_000_000) * in_rate + (output_tok / 1_000_000) * out_rate
+    with sqlite3.connect(COST_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            "INSERT INTO usage (agent_id,mission_id,model,input_tok,output_tok,cost_usd,ts) VALUES (?,?,?,?,?,?,?)",
+            (agent_id, mission_id, model, input_tok, output_tok, cost, time.time()),
+        )
+        conn.commit()
+
+
+def cost_summary(mission_id: str = "") -> dict[str, Any]:
+    with sqlite3.connect(COST_DB) as conn:
+        if mission_id:
+            row = conn.execute(
+                "SELECT SUM(input_tok),SUM(output_tok),SUM(cost_usd) FROM usage WHERE mission_id=?",
+                (mission_id,),
+            ).fetchone()
+        else:
+            row = conn.execute(
+                "SELECT SUM(input_tok),SUM(output_tok),SUM(cost_usd) FROM usage"
+            ).fetchone()
+    return {
+        "input_tokens":  int(row[0] or 0),
+        "output_tokens": int(row[1] or 0),
+        "cost_usd":      round(float(row[2] or 0.0), 4),
+    }
+
+
+TOKEN_RE = re.compile(
+    r"(?:input[_ ]tokens?[:\s]+(\d+).*?output[_ ]tokens?[:\s]+(\d+)"
+    r"|tokens?[:\s]+(\d+)\s*/\s*(\d+))",
+    re.IGNORECASE,
+)
+
+
+def parse_tokens_from_log(log_path: str) -> tuple[int, int]:
+    """Scan the last 200 lines of a log for token-usage patterns."""
+    try:
+        lines = Path(log_path).read_text(encoding="utf-8", errors="replace").splitlines()
+        for line in reversed(lines[-200:]):
+            m = TOKEN_RE.search(line)
+            if m:
+                if m.group(1):
+                    return int(m.group(1)), int(m.group(2))
+                return int(m.group(3)), int(m.group(4))
+    except OSError:
+        pass
+    return 0, 0
+
+
+# ── Webhook notifications ────────────────────────────────────────────────────
+
+def fire_webhook(event_type: str, payload: dict[str, Any]) -> None:
+    settings = load_settings(include_secrets=False)
+    url = str(settings.get("notifications", {}).get("webhook_url") or "").strip()
+    if not url:
+        return
+    body = json.dumps({"event": event_type, **payload, "ts": time.time()}).encode()
+    try:
+        import urllib.request
+        req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
+        urllib.request.urlopen(req, timeout=8)
+    except Exception:
+        pass
+
+
+# ── Diff preview ────────────────────────────────────────────────────────────
+
+def diff_preview() -> list[dict[str, Any]]:
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+        workspace = active_workspace()
+        base = current_branch(workspace)
+        results = []
+        for agent in state.get("agents", []):
+            if agent.get("status") not in ("complete",) or agent.get("merged"):
+                continue
+            branch = agent.get("branch", "")
+            diff = run(
+                ["git", "diff", f"{base}...{branch}", "--stat", "--no-color"],
+                cwd=workspace, check=False,
+            )
+            diff_full = run(
+                ["git", "diff", f"{base}...{branch}", "--no-color"],
+                cwd=workspace, check=False,
+            )
+            results.append({
+                "agent_id":  agent["id"],
+                "role":      agent.get("role", ""),
+                "branch":    branch,
+                "stat":      diff.stdout.strip()[-3000:],
+                "diff":      diff_full.stdout.strip()[-8000:],
+            })
+        return results
+
+
+# ── GitHub PR creation ───────────────────────────────────────────────────────
+
+def create_github_pr(title: str, body: str) -> dict[str, Any]:
+    workspace = active_workspace()
+    result = run(
+        ["gh", "pr", "create", "--title", title[:200], "--body", body[:4000], "--fill-first"],
+        cwd=workspace, check=False,
+    )
+    if result.returncode != 0:
+        # gh might not be installed or not authenticated
+        return {"ok": False, "error": (result.stderr or result.stdout).strip()[-800:]}
+    url = result.stdout.strip().splitlines()[-1]
+    return {"ok": True, "url": url}
+
+
+def auto_pr_from_state(state: dict[str, Any]) -> dict[str, Any]:
+    """Generate a PR title + body from the mission and agent results, then open the PR."""
+    whiteboard = state.get("whiteboard") or {}
+    mission = str(whiteboard.get("mission") or "Jarvis mission")
+    headline = mission_headline(mission)
+    agents = [a for a in state.get("agents", []) if a.get("status") == "complete" and a.get("merged")]
+    roles_done = ", ".join(a.get("role", a["id"]) for a in agents)
+    body = (
+        f"## Summary\n"
+        f"Automated multi-agent mission via Jcode Jarvis.\n\n"
+        f"**Mission:** {mission[:600]}\n\n"
+        f"**Agents merged:** {roles_done or 'none'}\n\n"
+        f"## Agents\n"
+        + "\n".join(f"- **{a.get('role',a['id'])}** — branch `{a.get('branch','')}` on {a.get('provider','')}/{a.get('model','')}" for a in agents)
+        + "\n\n🤖 Generated by [jcode-jarvise](https://github.com/atulpokharel-gp/jcode-jarvise)"
+    )
+    return create_github_pr(f"[Jarvis] {headline}", body)
+
+
+# ── RAG: keyword-based code context injection ────────────────────────────────
+
+def rag_context(task: str, workspace: Path, max_snippets: int = 4, lines_each: int = 40) -> str:
+    """Extract relevant code snippets from the workspace using keyword search."""
+    keywords = [w for w in re.findall(r"[a-zA-Z_][a-zA-Z0-9_]{3,}", task) if w.lower() not in {
+        "that", "this", "with", "from", "have", "will", "should", "must", "when",
+        "then", "also", "into", "each", "make", "build", "create", "function",
+    }][:10]
+    if not keywords or not workspace.exists():
+        return ""
+    snippets: list[str] = []
+    seen_files: set[str] = set()
+    for kw in keywords:
+        if len(snippets) >= max_snippets:
+            break
+        result = run(
+            ["git", "grep", "-n", "-i", "--", kw],
+            cwd=workspace, check=False,
+        )
+        for line in result.stdout.splitlines()[:6]:
+            if len(snippets) >= max_snippets:
+                break
+            parts = line.split(":", 2)
+            if len(parts) < 2:
+                continue
+            fpath = workspace / parts[0]
+            key = str(fpath)
+            if key in seen_files or not fpath.is_file():
+                continue
+            seen_files.add(key)
+            try:
+                lineno = max(0, int(parts[1]) - 5)
+                file_lines = fpath.read_text(encoding="utf-8", errors="replace").splitlines()
+                excerpt = "\n".join(file_lines[lineno : lineno + lines_each])
+                rel = str(fpath.relative_to(workspace))
+                snippets.append(f"--- {rel} (line {lineno+1}) ---\n{excerpt}")
+            except (OSError, ValueError):
+                continue
+    if not snippets:
+        return ""
+    return "\n\nRelevant codebase context (top matches for your task):\n\n" + "\n\n".join(snippets)
+
+
+# ── Conflict resolver agent ──────────────────────────────────────────────────
+
+def dispatch_conflict_resolver(state: dict[str, Any], agent: dict[str, Any], workspace: Path) -> None:
+    jcode = resolve_jcode_binary()
+    settings = load_settings(include_secrets=True)
+    resolver_id = f"resolver-{agent['id']}-{int(time.time())}"
+    log_path = LOG_DIR / f"{resolver_id}.log"
+    conflicts_list = "\n".join(agent.get("conflicts", []))
+    merge_out = agent.get("merge_output", "")[:2000]
+    prompt = f"""You are a Git Conflict Resolver. A merge of branch `{agent.get('branch')}` into the
+base branch produced conflicts. Resolve them cleanly and commit the result.
+
+Conflicted files:
+{conflicts_list or '(check git status)'}
+
+Merge error output:
+{merge_out}
+
+Steps:
+1. Run `git status` to see conflicting files.
+2. For each conflicted file: open it, understand both sides, resolve the conflict markers.
+3. Stage all resolved files with `git add`.
+4. Commit with message: `resolve merge conflicts from {agent.get('branch')}`
+5. Report what was resolved and how.
+"""
+    selection = select_agent_model({"task": "git merge conflict resolution"}, settings)
+    _, model_env, provider_label, model_label = launch_args_for(selection)
+    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
+    _, model_args, _, _ = launch_args_for(selection)
+    log_file = log_path.open("w", encoding="utf-8")
+    child_env = os.environ.copy()
+    child_env.update(model_env)
+    child_env["JARVIS_MEMORY_URL"] = f"http://127.0.0.1:{SERVER_PORT}/api/memory"
+    process = subprocess.Popen(
+        [jcode, *extra_args, *model_args, "run", prompt],
+        cwd=str(workspace),
+        env=child_env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    resolver = {
+        "id": resolver_id,
+        "role": "Conflict Resolver",
+        "kind": "resolver",
+        "resolves": agent["id"],
+        "branch": agent.get("branch"),
+        "status": "running",
+        "log": str(log_path),
+        "provider": provider_label,
+        "model": model_label,
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    PROCESSES[resolver_id] = process
+    state.setdefault("agents", []).append(resolver)
+    apcall(state, "master", resolver_id, "task.dispatch", {"branch": agent.get("branch")}, f"Conflict resolver launched for {agent.get('branch')}")
+
+
+# ── Dependency-aware scheduling ──────────────────────────────────────────────
+
+PENDING_WORKERS: list[dict[str, Any]] = []  # workers held back by unmet dependencies
+PENDING_LOCK = threading.Lock()
+
+
+def deps_satisfied(plan_item: dict[str, Any], state: dict[str, Any]) -> bool:
+    """Return True if all dependencies for this plan item are complete."""
+    deps = plan_item.get("depends_on") or []
+    if not deps:
+        return True
+    completed_roles = {
+        a.get("role", "") for a in state.get("agents", [])
+        if a.get("status") == "complete" and a.get("kind") not in ("healer", "qa", "resolver")
+    }
+    return all(dep in completed_roles for dep in deps)
+
+
+def try_launch_pending(state: dict[str, Any]) -> int:
+    """Attempt to launch any pending workers whose dependencies are now satisfied."""
+    with PENDING_LOCK:
+        if not PENDING_WORKERS:
+            return 0
+        launched = 0
+        still_pending = []
+        for pw in PENDING_WORKERS:
+            if live_process_count() >= MAX_CONCURRENT_AGENTS:
+                still_pending.append(pw)
+                continue
+            if not deps_satisfied(pw["plan_item"], state):
+                still_pending.append(pw)
+                continue
+            _spawn_worker(state, pw["plan_item"], pw["stamp"], pw["base_branch"],
+                          pw["workspace"], pw["jcode"], pw["extra_args"], pw["settings"])
+            launched += 1
+        PENDING_WORKERS[:] = still_pending
+    return launched
+
+
 # ── Agent prompts ───────────────────────────────────────────────────────────
 
 def worker_prompt(agent: dict[str, Any], headline: str, team_roles: list[str]) -> str:
@@ -1869,6 +2232,69 @@ curl -s "$JARVIS_MEMORY_URL" | python3 -c "import sys,json;[print(r['key'],':',r
 """
 
 
+def _spawn_worker(
+    state: dict[str, Any],
+    item: dict[str, str],
+    stamp: str,
+    base_branch: str,
+    workspace: Path,
+    jcode: str,
+    extra_args: list[str],
+    settings: dict[str, Any],
+) -> dict[str, Any]:
+    """Create a worktree, build the prompt with RAG context, and launch the agent process."""
+    index = item.get("_index", 1)
+    agent_id = f"agent-{stamp}-{index}"
+    branch = f"jarvis/{stamp}/{index}"
+    worktree = WORKTREE_ROOT / stamp / f"agent-{index}"
+    run(["git", "worktree", "add", "-B", branch, str(worktree), "HEAD"], cwd=workspace)
+    log_path = LOG_DIR / f"{agent_id}.log"
+    agent: dict[str, Any] = {
+        "id": agent_id,
+        "role": item["role"],
+        "task": item["task"],
+        "status": "starting",
+        "branch": branch,
+        "base_branch": base_branch,
+        "worktree": str(worktree),
+        "log": str(log_path),
+        "started_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    selection = select_agent_model(item, settings)
+    model_args, model_env, provider_label, model_label = launch_args_for(selection)
+    agent["provider"] = provider_label
+    agent["model"] = model_label
+    headline = mission_headline(str(state.get("whiteboard", {}).get("mission") or item.get("task") or ""))
+    team_roles = [a.get("role", "") for a in state.get("agents", []) if a.get("kind") not in ("healer", "qa", "resolver")]
+    rag = rag_context(item.get("task", ""), workspace)
+    prompt = worker_prompt(agent, headline, team_roles) + rag
+    log_file = log_path.open("w", encoding="utf-8")
+    child_env = os.environ.copy()
+    child_env.update(model_env)
+    child_env["JARVIS_MEMORY_URL"] = f"http://127.0.0.1:{SERVER_PORT}/api/memory"
+    process = subprocess.Popen(
+        [jcode, *extra_args, *model_args, "run", prompt],
+        cwd=str(worktree),
+        env=child_env,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
+        text=True,
+    )
+    PROCESSES[agent_id] = process
+    agent["pid"] = process.pid
+    agent["status"] = "running"
+    state.setdefault("agents", []).append(agent)
+    apcall(
+        state,
+        "master",
+        agent_id,
+        "task.dispatch",
+        {"branch": branch, "model": f"{provider_label}/{model_label}", "deps": item.get("depends_on", [])},
+        f"{agent_id} launched on {branch} ({provider_label}/{model_label})",
+    )
+    return agent
+
+
 def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
     with STATE_LOCK:
         state = load_state()
@@ -1893,77 +2319,49 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
         plan = clean_plan(plan)
         if not plan:
             raise RuntimeError("Plan is empty.")
-        # Set a mission budget: total agents that can be spawned (workers + QA + healers + restarts).
-        # Workers count as "spent" immediately; the rest are drawn down as they dispatch.
         state["budget"] = {
             "total": len(plan) * MISSION_AGENT_BUDGET_MULTIPLIER,
             "spent": len(plan),
             "mission_workers": len(plan),
         }
-        # The master compacts the mission into one shared headline; each worker
-        # gets the headline + its own objective instead of the full concept.
-        headline = mission_headline(task)
-        team_roles = [item["role"] for item in plan]
-        new_agents: list[dict[str, Any]] = []
-        for index, item in enumerate(plan, start=1):
-            agent_id = f"agent-{stamp}-{index}"
-            branch = f"jarvis/{stamp}/{index}"
-            worktree = WORKTREE_ROOT / stamp / f"agent-{index}"
-            run(["git", "worktree", "add", "-B", branch, str(worktree), "HEAD"], cwd=workspace)
-            log_path = LOG_DIR / f"{agent_id}.log"
-            agent = {
-                "id": agent_id,
-                "role": item["role"],
-                "task": item["task"],
-                "status": "starting",
-                "branch": branch,
-                "base_branch": base_branch,
-                "worktree": str(worktree),
-                "log": str(log_path),
-                "started_at": datetime.now().isoformat(timespec="seconds"),
-            }
-            selection = select_agent_model(item, settings)
-            model_args, model_env, provider_label, model_label = launch_args_for(selection)
-            agent["provider"] = provider_label
-            agent["model"] = model_label
-            prompt = worker_prompt(agent, headline, team_roles)
-            log_file = log_path.open("w", encoding="utf-8")
-            child_env = os.environ.copy()
-            child_env.update(model_env)
-            process = subprocess.Popen(
-                [jcode, *extra_args, *model_args, "run", prompt],
-                cwd=str(worktree),
-                env=child_env,
-                stdout=log_file,
-                stderr=subprocess.STDOUT,
-                text=True,
-            )
-            PROCESSES[agent_id] = process
-            agent["pid"] = process.pid
-            agent["status"] = "running"
-            new_agents.append(agent)
-            apcall(
-                state,
-                "master",
-                agent_id,
-                "task.dispatch",
-                {"branch": branch, "model": f"{provider_label}/{model_label}"},
-                f"{agent_id} launched on {branch} with {provider_label}/{model_label}",
-            )
-        state["plan"] = plan
-        state["plan_preview"] = False
         whiteboard = state.get("whiteboard")
         if not isinstance(whiteboard, dict) or not whiteboard.get("tasks"):
             whiteboard = build_whiteboard(task, plan)
             state["whiteboard"] = whiteboard
         whiteboard["status"] = "executing"
-        for task_item, agent in zip(whiteboard["tasks"], new_agents):
-            task_item["assignee"] = agent["id"]
-            task_item["branch"] = agent["branch"]
-            task_item["status"] = "in_progress"
-        state.setdefault("agents", []).extend(new_agents)
+        # Tag each plan item with its index for _spawn_worker
+        for i, item in enumerate(plan, start=1):
+            item["_index"] = i
+        mission_id = stamp
+        state["mission_id"] = mission_id
+        # Launch immediately or queue as pending based on dependency graph
+        launched: list[dict[str, Any]] = []
+        with PENDING_LOCK:
+            PENDING_WORKERS.clear()
+        for i, item in enumerate(plan, start=1):
+            if deps_satisfied(item, state):
+                agent = _spawn_worker(state, item, stamp, base_branch, workspace, jcode, extra_args, settings)
+                launched.append(agent)
+                # Assign on whiteboard
+                if i - 1 < len(whiteboard.get("tasks", [])):
+                    whiteboard["tasks"][i - 1]["assignee"] = agent["id"]
+                    whiteboard["tasks"][i - 1]["branch"]   = agent["branch"]
+                    whiteboard["tasks"][i - 1]["status"]   = "in_progress"
+            else:
+                with PENDING_LOCK:
+                    PENDING_WORKERS.append({
+                        "plan_item": item, "stamp": stamp, "base_branch": base_branch,
+                        "workspace": workspace, "jcode": jcode,
+                        "extra_args": extra_args, "settings": settings,
+                    })
+                apcall(state, "master", f"agent-{stamp}-{i}", "task.queued",
+                       {"deps": item.get("depends_on", [])},
+                       f"Worker {i} ({item['role']}) waiting on: {item.get('depends_on', [])}")
+        state["plan"] = plan
+        state["plan_preview"] = False
         sync_tasks(state)
-        apcall(state, "master", "all", "swarm.deploy", {"count": len(new_agents)})
+        apcall(state, "master", "all", "swarm.deploy",
+               {"launched": len(launched), "pending": len(PENDING_WORKERS)})
         save_state(state)
         return hydrate_state(state)
 
@@ -2087,7 +2485,7 @@ def add_whiteboard_note(text: str, author: str = "master") -> dict[str, Any]:
         return hydrate_state(state)
 
 
-def merge_finished() -> dict[str, Any]:
+def merge_finished(auto_pr: bool = False) -> dict[str, Any]:
     with STATE_LOCK:
         state = load_state()
         poll_processes(state)
@@ -2096,7 +2494,8 @@ def merge_finished() -> dict[str, Any]:
             raise RuntimeError("Selected workspace is not a git repo.")
         if dirty(workspace):
             raise RuntimeError("Workspace is dirty. Commit or stash before master merge.")
-        merged = []
+        merged: list[str] = []
+        conflict_agents: list[dict[str, Any]] = []
         for agent in state.get("agents", []):
             if agent.get("status") != "complete" or agent.get("merged"):
                 continue
@@ -2107,21 +2506,40 @@ def merge_finished() -> dict[str, Any]:
                 agent["merge_output"] = (result.stdout + result.stderr).strip()[-4000:]
                 conflicts = run(["git", "diff", "--name-only", "--diff-filter=U"], cwd=workspace, check=False)
                 agent["conflicts"] = conflicts.stdout.splitlines()
-                event(state, f"Conflict while merging {branch}. Master intervention required.")
-                save_state(state)
-                raise RuntimeError(f"Conflict while merging {branch}. Resolve in root worktree.")
+                event(state, f"Conflict while merging {branch}. Spawning conflict resolver.")
+                # Abort the failed merge so the workspace is clean for other branches
+                run(["git", "merge", "--abort"], cwd=workspace, check=False)
+                dispatch_conflict_resolver(state, agent, workspace)
+                conflict_agents.append(agent)
+                continue
             agent["merged"] = True
             merged.append(branch)
             apcall(state, agent["id"], "master", "branch.merged", {"branch": branch}, f"Merged {branch}")
-        if not merged:
+        pr_result: dict[str, Any] = {}
+        if not merged and not conflict_agents:
             event(state, "No completed worker branches were ready to merge.")
         else:
             whiteboard = state.get("whiteboard")
-            if isinstance(whiteboard, dict):
+            if isinstance(whiteboard, dict) and not conflict_agents:
                 whiteboard["status"] = "merged"
-            apcall(state, "master", "all", "swarm.combined", {"branches": merged})
+            apcall(state, "master", "all", "swarm.combined",
+                   {"branches": merged, "conflicts": len(conflict_agents)})
+            cost = cost_summary(state.get("mission_id", ""))
+            fire_webhook("mission.merged", {
+                "merged": merged,
+                "conflicts": [a["id"] for a in conflict_agents],
+                "cost_usd": cost["cost_usd"],
+                "mission": str((state.get("whiteboard") or {}).get("mission") or ""),
+            })
+            if auto_pr and merged:
+                pr_result = auto_pr_from_state(state)
+                if pr_result.get("ok"):
+                    state["last_pr_url"] = pr_result["url"]
         save_state(state)
-        return hydrate_state(state)
+        result = hydrate_state(state)
+        if pr_result:
+            result["pr"] = pr_result
+        return result
 
 
 # ============================================================================
@@ -2538,6 +2956,16 @@ class Handler(BaseHTTPRequestHandler):
                 limit = int(parse_qs(parsed.query).get("limit", ["200"])[0])
                 self.send_json(memory_read(q=q, mission_id=mission, tag=tag, limit=limit))
                 return
+            if parsed.path == "/api/templates":
+                self.send_json(templates_load())
+                return
+            if parsed.path == "/api/diff":
+                self.send_json(diff_preview())
+                return
+            if parsed.path == "/api/cost":
+                mission_id = parse_qs(parsed.query).get("mission", [""])[0]
+                self.send_json(cost_summary(mission_id))
+                return
             if parsed.path.startswith("/apcall/v1"):
                 self.handle_apcall_get(parsed)
                 return
@@ -2652,7 +3080,29 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_json(start_workers(task, plan))
                 return
             if self.path == "/api/merge":
-                self.send_json(merge_finished())
+                auto_pr = bool(body.get("auto_pr", False))
+                self.send_json(merge_finished(auto_pr=auto_pr))
+                return
+            if self.path == "/api/pr/create":
+                title = str(body.get("title") or "").strip()
+                pr_body = str(body.get("body") or "").strip()
+                if not title:
+                    raise RuntimeError("PR title is required.")
+                self.send_json(create_github_pr(title, pr_body))
+                return
+            if self.path == "/api/templates":
+                name   = str(body.get("name") or "").strip()
+                prompt = str(body.get("prompt") or "").strip()
+                tags   = str(body.get("tags") or "").strip()
+                if not name or not prompt:
+                    raise RuntimeError("Template name and prompt are required.")
+                self.send_json(template_add(name, prompt, tags))
+                return
+            if self.path == "/api/templates/delete":
+                tid = str(body.get("id") or "").strip()
+                if not tid:
+                    raise RuntimeError("Template id is required.")
+                self.send_json(template_delete(tid))
                 return
             if self.path == "/api/heal":
                 agent_id = str(body.get("id") or "").strip()
@@ -2758,6 +3208,7 @@ def main() -> int:
     SERVER_PORT = args.port
     ensure_dirs()
     memory_init()
+    cost_init()
     pin = ensure_pin()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[jarvis] Local console : http://{args.host}:{args.port}")
