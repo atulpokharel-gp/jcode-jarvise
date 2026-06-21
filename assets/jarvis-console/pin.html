@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Jarvis — Remote Access</title>
+    <style>
+      *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+      :root {
+        --bg: #060a10;
+        --surface: #0d1520;
+        --border: rgba(124, 199, 255, 0.14);
+        --accent: #7cc7ff;
+        --text: #c8d8f0;
+        --subtle: rgba(200, 216, 240, 0.45);
+        --danger: #ff6060;
+        --radius: 12px;
+      }
+
+      body {
+        min-height: 100dvh;
+        background: var(--bg);
+        color: var(--text);
+        font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 0;
+        overflow: hidden;
+      }
+
+      /* matrix rain */
+      .rain {
+        position: fixed; inset: 0;
+        pointer-events: none; z-index: 0;
+        overflow: hidden;
+      }
+      .rain span {
+        position: absolute; top: -60px; font-size: 11px;
+        color: rgba(124, 199, 255, 0.07); white-space: nowrap;
+        animation: fall linear infinite;
+        writing-mode: vertical-lr;
+      }
+      .rain span:nth-child(1)  { left:  4%; animation-duration: 18s; animation-delay: 0s; }
+      .rain span:nth-child(2)  { left: 14%; animation-duration: 22s; animation-delay: 3s; }
+      .rain span:nth-child(3)  { left: 26%; animation-duration: 16s; animation-delay: 1s; }
+      .rain span:nth-child(4)  { left: 38%; animation-duration: 20s; animation-delay: 5s; }
+      .rain span:nth-child(5)  { left: 52%; animation-duration: 25s; animation-delay: 2s; }
+      .rain span:nth-child(6)  { left: 65%; animation-duration: 19s; animation-delay: 7s; }
+      .rain span:nth-child(7)  { left: 78%; animation-duration: 23s; animation-delay: 0.5s; }
+      .rain span:nth-child(8)  { left: 90%; animation-duration: 17s; animation-delay: 4s; }
+      @keyframes fall { to { transform: translateY(110vh); } }
+
+      /* card */
+      .card {
+        position: relative; z-index: 1;
+        background: var(--surface);
+        border: 1px solid var(--border);
+        border-radius: var(--radius);
+        padding: 44px 48px 40px;
+        width: min(420px, 92vw);
+        display: flex; flex-direction: column; align-items: center; gap: 28px;
+        box-shadow: 0 0 60px rgba(124, 199, 255, 0.05), 0 24px 48px rgba(0,0,0,0.5);
+      }
+
+      /* orb */
+      .orb {
+        width: 56px; height: 56px; border-radius: 50%;
+        background: radial-gradient(circle at 38% 38%, rgba(124,199,255,0.25), transparent 70%);
+        border: 1px solid rgba(124, 199, 255, 0.3);
+        display: flex; align-items: center; justify-content: center;
+        position: relative;
+      }
+      .orb::after {
+        content: '';
+        position: absolute; inset: -6px;
+        border-radius: 50%;
+        border: 1px solid rgba(124, 199, 255, 0.1);
+        animation: pulse 3s ease-in-out infinite;
+      }
+      @keyframes pulse { 0%,100% { opacity: 0.4; transform: scale(1); } 50% { opacity: 1; transform: scale(1.08); } }
+      .orb svg { width: 22px; height: 22px; fill: var(--accent); }
+
+      .title-block { text-align: center; }
+      .eyebrow { font-size: 10px; letter-spacing: 0.14em; text-transform: uppercase; color: var(--accent); margin-bottom: 6px; }
+      h1 { font-size: 22px; font-weight: 700; color: #e8f4ff; letter-spacing: -0.02em; }
+      .subtitle { font-size: 13px; color: var(--subtle); margin-top: 6px; }
+
+      /* pin boxes */
+      .pin-row {
+        display: flex; gap: 10px;
+      }
+      .pin-digit {
+        width: 48px; height: 60px;
+        background: rgba(124,199,255,0.05);
+        border: 1.5px solid var(--border);
+        border-radius: 8px;
+        font-size: 28px; font-weight: 700;
+        text-align: center;
+        color: var(--accent);
+        caret-color: var(--accent);
+        outline: none;
+        transition: border-color 0.15s, background 0.15s, box-shadow 0.15s;
+        -webkit-appearance: none;
+        appearance: none;
+      }
+      .pin-digit:focus {
+        border-color: var(--accent);
+        background: rgba(124,199,255,0.1);
+        box-shadow: 0 0 0 2px rgba(124,199,255,0.15);
+      }
+      .pin-row.shake .pin-digit {
+        animation: shake 0.4s ease;
+        border-color: var(--danger);
+        background: rgba(255,96,96,0.08);
+      }
+      @keyframes shake {
+        0%,100% { transform: translateX(0); }
+        20% { transform: translateX(-6px); }
+        40% { transform: translateX(6px); }
+        60% { transform: translateX(-4px); }
+        80% { transform: translateX(4px); }
+      }
+
+      .status {
+        font-size: 12px;
+        min-height: 18px;
+        text-align: center;
+        transition: color 0.2s;
+      }
+      .status.err  { color: var(--danger); }
+      .status.ok   { color: #5ddc8a; }
+      .status.idle { color: var(--subtle); }
+
+      .submit-btn {
+        width: 100%;
+        padding: 13px;
+        background: rgba(124,199,255,0.1);
+        border: 1px solid rgba(124,199,255,0.3);
+        border-radius: 8px;
+        color: var(--accent);
+        font-family: inherit;
+        font-size: 14px;
+        font-weight: 600;
+        letter-spacing: 0.06em;
+        cursor: pointer;
+        transition: background 0.15s, border-color 0.15s;
+      }
+      .submit-btn:hover { background: rgba(124,199,255,0.18); border-color: rgba(124,199,255,0.5); }
+      .submit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+      .footer { font-size: 11px; color: var(--subtle); text-align: center; }
+    </style>
+  </head>
+  <body>
+    <div class="rain" aria-hidden="true">
+      <span>01001010 REMOTE ACCESS PENDING</span>
+      <span>VERIFY IDENTITY / ENTER PIN</span>
+      <span>JCODE JARVIS CONTROL ROOM</span>
+      <span>AGENT SWARM / APCALL MESH</span>
+      <span>SECURE TUNNEL ACTIVE</span>
+      <span>MULTI AGENT CONSOLE READY</span>
+      <span>AUTHORIZE TO PROCEED</span>
+      <span>PIN REQUIRED FOR ENTRY</span>
+    </div>
+
+    <div class="card" role="main">
+      <div class="orb" aria-hidden="true">
+        <svg viewBox="0 0 24 24"><path d="M12 2a10 10 0 1 0 0 20A10 10 0 0 0 12 2zm0 2a8 8 0 1 1 0 16A8 8 0 0 1 12 4zm0 3a1.5 1.5 0 1 0 0 3 1.5 1.5 0 0 0 0-3zm-1 5h2v6h-2z"/></svg>
+      </div>
+
+      <div class="title-block">
+        <p class="eyebrow">Jarvis Breach Console</p>
+        <h1>Remote Access</h1>
+        <p class="subtitle">Enter the 6-digit PIN shown on the host machine</p>
+      </div>
+
+      <div class="pin-row" id="pinRow" role="group" aria-label="PIN digits">
+        <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" aria-label="Digit 1" autocomplete="off" />
+        <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" aria-label="Digit 2" autocomplete="off" />
+        <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" aria-label="Digit 3" autocomplete="off" />
+        <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" aria-label="Digit 4" autocomplete="off" />
+        <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" aria-label="Digit 5" autocomplete="off" />
+        <input class="pin-digit" type="tel" maxlength="1" inputmode="numeric" pattern="[0-9]" aria-label="Digit 6" autocomplete="off" />
+      </div>
+
+      <p class="status idle" id="status">Enter your 6-digit PIN</p>
+
+      <button class="submit-btn" id="submitBtn" disabled>Unlock Console</button>
+
+      <p class="footer">Access is PIN-protected. Sessions expire after 24 hours.</p>
+    </div>
+
+    <script>
+      const digits = Array.from(document.querySelectorAll('.pin-digit'));
+      const pinRow = document.getElementById('pinRow');
+      const status = document.getElementById('status');
+      const submitBtn = document.getElementById('submitBtn');
+
+      digits[0].focus();
+
+      function getPin() { return digits.map(d => d.value).join(''); }
+
+      function updateBtn() {
+        submitBtn.disabled = getPin().length < 6;
+      }
+
+      digits.forEach((el, i) => {
+        el.addEventListener('input', () => {
+          el.value = el.value.replace(/\D/g, '').slice(-1);
+          if (el.value && i < 5) digits[i + 1].focus();
+          updateBtn();
+          if (getPin().length === 6) setTimeout(submit, 80);
+        });
+
+        el.addEventListener('keydown', e => {
+          if (e.key === 'Backspace' && !el.value && i > 0) {
+            digits[i - 1].value = '';
+            digits[i - 1].focus();
+            updateBtn();
+          }
+          if (e.key === 'Enter') submit();
+        });
+
+        el.addEventListener('paste', e => {
+          e.preventDefault();
+          const text = (e.clipboardData || window.clipboardData).getData('text').replace(/\D/g,'').slice(0, 6);
+          text.split('').forEach((ch, j) => { if (digits[j]) digits[j].value = ch; });
+          const next = digits[Math.min(text.length, 5)];
+          if (next) next.focus();
+          updateBtn();
+          if (getPin().length === 6) setTimeout(submit, 80);
+        });
+      });
+
+      async function submit() {
+        const pin = getPin();
+        if (pin.length < 6) return;
+        submitBtn.disabled = true;
+        status.className = 'status idle';
+        status.textContent = 'Verifying…';
+        try {
+          const res = await fetch('/api/pin/verify', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ pin }),
+          });
+          const data = await res.json();
+          if (data.ok) {
+            status.className = 'status ok';
+            status.textContent = 'Access granted — entering console…';
+            setTimeout(() => { window.location.href = '/'; }, 500);
+          } else {
+            throw new Error(data.error || 'Wrong PIN');
+          }
+        } catch (err) {
+          status.className = 'status err';
+          status.textContent = err.message || 'Wrong PIN — try again.';
+          pinRow.classList.add('shake');
+          setTimeout(() => {
+            pinRow.classList.remove('shake');
+            digits.forEach(d => { d.value = ''; });
+            digits[0].focus();
+            updateBtn();
+            status.className = 'status idle';
+            status.textContent = 'Enter your 6-digit PIN';
+          }, 800);
+        }
+      }
+
+      submitBtn.addEventListener('click', submit);
+    </script>
+  </body>
+</html>

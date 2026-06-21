@@ -9,6 +9,7 @@ leftover worker changes when a process exits, and offers a master merge action.
 from __future__ import annotations
 
 import argparse
+import hmac
 import json
 import os
 import re
@@ -18,11 +19,12 @@ import shutil
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
-from urllib.parse import parse_qs, urlparse
+from urllib.parse import parse_qs, quote, urlparse
 
 
 ROOT = Path.cwd()
@@ -36,6 +38,13 @@ SESSIONS_DIR = STATE_DIR / "sessions"
 PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 DISPATCH_QUEUE: list[dict[str, Any]] = []  # pending healer/QA jobs waiting for a slot
 STATE_LOCK = threading.Lock()
+# Remote access — PIN auth + Cloudflare Tunnel
+SESSION_TOKENS: dict[str, float] = {}  # token → expiry unix timestamp
+SESSION_LOCK = threading.Lock()
+SESSION_TTL = 86400  # 24 h
+TUNNEL_PROC: subprocess.Popen[Any] | None = None
+TUNNEL_URL: str = ""
+TUNNEL_LOCK = threading.Lock()
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8765
 APCALL_CAP = 200
@@ -273,6 +282,10 @@ def default_settings() -> dict[str, Any]:
     return {
         "strategy": "balanced",
         "workspace": {"path": str(ROOT)},
+        "remote": {
+            "pin": "",          # 6-digit PIN; auto-generated on first use
+            "tunnel": "auto",   # "auto" = try cloudflared; "off" = disable
+        },
         "devspace": {
             "enabled": False,
             "token": "",
@@ -614,6 +627,113 @@ def settings_summary() -> dict[str, Any]:
             for provider_id, provider in providers.items()
         },
     }
+
+
+# ============================================================================
+# Remote access — PIN auth, session tokens, Cloudflare Tunnel
+# ============================================================================
+
+def ensure_pin() -> str:
+    """Return the 6-digit remote PIN; auto-generate and persist if not set."""
+    raw: dict[str, Any] = {}
+    if SETTINGS_FILE.exists():
+        try:
+            raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    pin = str(raw.get("remote", {}).get("pin") or "")
+    if not pin or not pin.isdigit() or len(pin) != 6:
+        pin = "".join(str(secrets.randbelow(10)) for _ in range(6))
+        raw.setdefault("remote", {})["pin"] = pin
+        SETTINGS_FILE.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    return pin
+
+
+def reset_pin() -> str:
+    """Generate a new 6-digit PIN, persist it, and invalidate all sessions."""
+    pin = "".join(str(secrets.randbelow(10)) for _ in range(6))
+    raw: dict[str, Any] = {}
+    if SETTINGS_FILE.exists():
+        try:
+            raw = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        except json.JSONDecodeError:
+            pass
+    raw.setdefault("remote", {})["pin"] = pin
+    SETTINGS_FILE.write_text(json.dumps(raw, indent=2), encoding="utf-8")
+    with SESSION_LOCK:
+        SESSION_TOKENS.clear()
+    print(f"[jarvis] Remote PIN reset: {pin}")
+    return pin
+
+
+def verify_pin(submitted: str) -> bool:
+    return hmac.compare_digest(submitted.strip(), ensure_pin())
+
+
+def create_session() -> str:
+    token = secrets.token_hex(32)
+    with SESSION_LOCK:
+        SESSION_TOKENS[token] = time.time() + SESSION_TTL
+    return token
+
+
+def check_session(token: str) -> bool:
+    with SESSION_LOCK:
+        exp = SESSION_TOKENS.get(token)
+        if not exp:
+            return False
+        if time.time() > exp:
+            SESSION_TOKENS.pop(token, None)
+            return False
+        return True
+
+
+def start_tunnel(port: int) -> None:
+    """Spawn cloudflared in the background; parse the public URL from its output."""
+    global TUNNEL_PROC, TUNNEL_URL
+    try:
+        proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+        )
+    except FileNotFoundError:
+        print("[jarvis] cloudflared not found — remote URL unavailable.")
+        print("[jarvis]   Install: https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/")
+        print(f"[jarvis] Or run: npx cloudflared tunnel --url http://127.0.0.1:{port}")
+        return
+    TUNNEL_PROC = proc
+
+    def _watch() -> None:
+        global TUNNEL_URL
+        try:
+            for line in proc.stdout:  # type: ignore[union-attr]
+                m = re.search(r"https://[a-z0-9\-]+\.trycloudflare\.com", line)
+                if m:
+                    url = m.group(0)
+                    with TUNNEL_LOCK:
+                        TUNNEL_URL = url
+                    pin = ensure_pin()
+                    print(f"[jarvis] ╔══════════════════════════════════════╗")
+                    print(f"[jarvis] ║  Remote access ready                 ║")
+                    print(f"[jarvis] ║  URL: {url:<32}║")
+                    print(f"[jarvis] ║  PIN: {pin}                            ║")
+                    print(f"[jarvis] ╚══════════════════════════════════════╝")
+                    break
+        except Exception:
+            pass
+
+    threading.Thread(target=_watch, daemon=True).start()
+
+
+def tunnel_status() -> dict[str, Any]:
+    with TUNNEL_LOCK:
+        url = TUNNEL_URL
+    pin = ensure_pin()
+    running = TUNNEL_PROC is not None and TUNNEL_PROC.poll() is None
+    qr = f"https://api.qrserver.com/v1/create-qr-code/?size=180x180&data={quote(url)}" if url else ""
+    return {"url": url, "pin": pin, "running": running, "qr_url": qr}
 
 
 def current_branch(cwd: Path | None = None) -> str:
@@ -2118,6 +2238,45 @@ class Handler(BaseHTTPRequestHandler):
             return {}
         return json.loads(self.rfile.read(length).decode("utf-8"))
 
+    # --- remote auth helpers ---
+
+    def _session_token(self) -> str:
+        for part in self.headers.get("Cookie", "").split(";"):
+            name, _, val = part.strip().partition("=")
+            if name.strip() == "jarvis_session":
+                return val.strip()
+        return ""
+
+    def _is_local(self) -> bool:
+        return self.client_address[0] in ("127.0.0.1", "::1", "localhost")
+
+    def _authorized(self) -> bool:
+        return self._is_local() or check_session(self._session_token())
+
+    def _redirect_pin(self) -> None:
+        self.send_response(302)
+        self.send_header("Location", "/pin")
+        self.send_header("Content-Length", "0")
+        self.end_headers()
+
+    def _serve_asset(self, filename: str) -> None:
+        path = (ASSET_DIR / filename).resolve()
+        if not str(path).startswith(str(ASSET_DIR.resolve())) or not path.exists():
+            self.send_error(404)
+            return
+        suffix = Path(filename).suffix
+        ct = {"css": "text/css", "js": "text/javascript", "html": "text/html",
+              "png": "image/png", "gif": "image/gif", "mp4": "video/mp4"}.get(suffix.lstrip("."), "text/html")
+        data = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", ct)
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        self.send_header("Content-Length", str(len(data)))
+        self.end_headers()
+        self.wfile.write(data)
+
     def mcp_authorized(self, cfg: dict[str, Any]) -> bool:
         token = cfg.get("token") or ""
         if not token:
@@ -2207,6 +2366,31 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self) -> None:  # noqa: N802
         try:
             parsed = urlparse(self.path)
+            # PIN entry page — no auth required
+            if parsed.path == "/pin":
+                self._serve_asset("pin.html")
+                return
+            # Static assets (css/js/images) — no auth so pin.html can load styles
+            if parsed.path not in ("/", "") and not parsed.path.startswith("/api/") and not parsed.path.startswith("/apcall/"):
+                route = parsed.path.lstrip("/")
+                candidate = (ASSET_DIR / route).resolve()
+                if str(candidate).startswith(str(ASSET_DIR.resolve())) and candidate.exists() and candidate.is_file():
+                    self._serve_asset(route)
+                    return
+            # Remote-access routes open to authorized clients
+            if parsed.path == "/api/tunnel/status":
+                if not self._authorized():
+                    self.send_json({"error": "unauthorized"}, status=401)
+                    return
+                self.send_json(tunnel_status())
+                return
+            # Auth gate for everything else
+            if not self._authorized():
+                if parsed.path.startswith("/api/"):
+                    self.send_json({"error": "unauthorized"}, status=401)
+                else:
+                    self._redirect_pin()
+                return
             if parsed.path == "/api/status":
                 with STATE_LOCK:
                     state = load_state()
@@ -2242,25 +2426,8 @@ class Handler(BaseHTTPRequestHandler):
                     }
                 )
                 return
-            route = "index.html" if parsed.path == "/" else parsed.path.lstrip("/")
-            path = (ASSET_DIR / route).resolve()
-            if not str(path).startswith(str(ASSET_DIR.resolve())) or not path.exists():
-                self.send_error(404)
-                return
-            content_type = "text/html"
-            if path.suffix == ".css":
-                content_type = "text/css"
-            elif path.suffix == ".js":
-                content_type = "text/javascript"
-            data = path.read_bytes()
-            self.send_response(200)
-            self.send_header("Content-Type", content_type)
-            self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
-            self.send_header("Pragma", "no-cache")
-            self.send_header("Expires", "0")
-            self.send_header("Content-Length", str(len(data)))
-            self.end_headers()
-            self.wfile.write(data)
+            route = "index.html" if parsed.path in ("/", "") else parsed.path.lstrip("/")
+            self._serve_asset(route)
         except Exception as exc:
             self.send_json({"error": str(exc)}, status=400)
             return
@@ -2270,7 +2437,35 @@ class Handler(BaseHTTPRequestHandler):
             if urlparse(self.path).path == "/mcp":
                 self.handle_mcp()
                 return
+            # PIN verification — no session required
+            if urlparse(self.path).path == "/api/pin/verify":
+                body = self.read_json()
+                submitted = str(body.get("pin", "")).strip()
+                if verify_pin(submitted):
+                    token = create_session()
+                    data = json.dumps({"ok": True, "local": self._is_local()}).encode()
+                    self.send_response(200)
+                    self.send_header("Content-Type", "application/json")
+                    self.send_header("Content-Length", str(len(data)))
+                    self.send_header(
+                        "Set-Cookie",
+                        f"jarvis_session={token}; HttpOnly; SameSite=Lax; Max-Age={SESSION_TTL}; Path=/",
+                    )
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self.send_json({"ok": False, "error": "Wrong PIN — try again."}, status=401)
+                return
+            # Auth gate for all other POST routes
+            if not self._authorized():
+                self.send_json({"error": "unauthorized"}, status=401)
+                return
             body = self.read_json()
+            # PIN reset (local only — remote callers already know the PIN)
+            if self.path == "/api/pin/reset":
+                new_pin = reset_pin()
+                self.send_json({**tunnel_status(), "pin": new_pin})
+                return
             if self.path == "/api/plan":
                 task = str(body.get("task", "")).strip()
                 if not task:
@@ -2396,15 +2591,25 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Run the local Jcode Jarvis console.")
     parser.add_argument("--host", default=DEFAULT_HOST)
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
+    parser.add_argument("--no-tunnel", action="store_true", help="Skip Cloudflare Tunnel auto-start")
     args = parser.parse_args()
     ensure_dirs()
+    pin = ensure_pin()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
-    print(f"Jarvis console: http://{args.host}:{args.port}")
-    print("Set JARVIS_JCODE_ARGS to add provider/model flags for workers.")
+    print(f"[jarvis] Local console : http://{args.host}:{args.port}")
+    print(f"[jarvis] Remote PIN    : {pin}  (change in Settings → Remote Access)")
+    print("[jarvis] Set JARVIS_JCODE_ARGS to pin provider/model flags for workers.")
+    settings = load_settings(include_secrets=True)
+    tunnel_mode = settings.get("remote", {}).get("tunnel", "auto")
+    if not args.no_tunnel and tunnel_mode != "off":
+        threading.Thread(target=start_tunnel, args=(args.port,), daemon=True).start()
     try:
         server.serve_forever()
     except KeyboardInterrupt:
-        print("\nStopping Jarvis console.")
+        print("\n[jarvis] Stopping console.")
+    finally:
+        if TUNNEL_PROC and TUNNEL_PROC.poll() is None:
+            TUNNEL_PROC.terminate()
     return 0
 
 

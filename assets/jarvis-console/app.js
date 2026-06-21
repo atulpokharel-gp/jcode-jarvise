@@ -73,6 +73,14 @@ const wbActionButton = document.querySelector("#wbActionButton");
 const liveActivity = document.querySelector("#liveActivity");
 const consoleDeck = document.querySelector("#consoleDeck");
 const consolesButton = document.querySelector("#consolesButton");
+const tunnelBadge = document.querySelector("#tunnelBadge");
+const remoteUrl = document.querySelector("#remoteUrl");
+const remotePin = document.querySelector("#remotePin");
+const remoteQr = document.querySelector("#remoteQr");
+const remoteQrPlaceholder = document.querySelector("#remoteQrPlaceholder");
+const copyUrlBtn = document.querySelector("#copyUrlBtn");
+const revealPinBtn = document.querySelector("#revealPinBtn");
+const resetPinBtn = document.querySelector("#resetPinBtn");
 
 let currentPlan = [];
 let latestAgents = [];
@@ -777,6 +785,62 @@ function renderHealing(healing, agents) {
     });
 }
 
+let pinRevealed = false;
+let lastTunnelUrl = "";
+
+function renderRemoteAccess(t) {
+  if (!t) return;
+  // Badge
+  if (tunnelBadge) {
+    tunnelBadge.textContent = t.running ? "tunnel active" : t.url ? "tunnel ready" : "no tunnel";
+    tunnelBadge.className = `badge ${t.running || t.url ? "status-complete" : "status-failed"}`;
+  }
+  // URL
+  if (remoteUrl) {
+    remoteUrl.textContent = t.url || "Tunnel not connected — install cloudflared or run manually";
+    remoteUrl.style.color = t.url ? "#7cc7ff" : "rgba(200,216,240,0.4)";
+  }
+  // PIN
+  if (remotePin) {
+    remotePin.textContent = pinRevealed ? (t.pin || "------") : "••••••";
+  }
+  // QR
+  if (remoteQr && remoteQrPlaceholder) {
+    if (t.qr_url && t.url) {
+      remoteQr.src = t.qr_url;
+      remoteQr.hidden = false;
+      remoteQrPlaceholder.hidden = true;
+    } else {
+      remoteQr.hidden = true;
+      remoteQrPlaceholder.hidden = false;
+    }
+  }
+  lastTunnelUrl = t.url || "";
+}
+
+async function pollTunnel() {
+  try {
+    const t = await api("/api/tunnel/status");
+    renderRemoteAccess(t);
+    // Keep polling until the tunnel is up
+    if (!t.url) setTimeout(pollTunnel, 4000);
+    else setTimeout(pollTunnel, 30000);
+  } catch {
+    setTimeout(pollTunnel, 8000);
+  }
+}
+
+async function resetPin() {
+  if (!confirm("Generate a new PIN? All active remote sessions will be invalidated.")) return;
+  try {
+    const t = await api("/api/pin/reset", { method: "POST", body: JSON.stringify({}) });
+    pinRevealed = true;
+    renderRemoteAccess(t);
+  } catch (err) {
+    alert(err.message);
+  }
+}
+
 function renderBudget(state) {
   const budget = state.budget;
   const queueDepth = state.dispatch_queue_depth || 0;
@@ -1422,6 +1486,17 @@ settingsButton.addEventListener("click", () => openSettings().catch((error) => a
 healToggle.addEventListener("click", () => toggleHealing().catch((error) => alert(error.message)));
 qaToggle.addEventListener("click", () => toggleQa().catch((error) => alert(error.message)));
 if (killswitchButton) killswitchButton.addEventListener("click", () => triggerKillswitch().catch((error) => alert(error.message)));
+if (copyUrlBtn) copyUrlBtn.addEventListener("click", () => {
+  if (lastTunnelUrl) navigator.clipboard.writeText(lastTunnelUrl).then(() => {
+    copyUrlBtn.textContent = "✓"; setTimeout(() => { copyUrlBtn.textContent = "⧉"; }, 1200);
+  });
+});
+if (revealPinBtn) revealPinBtn.addEventListener("click", () => {
+  pinRevealed = !pinRevealed;
+  revealPinBtn.textContent = pinRevealed ? "🙈" : "👁";
+  pollTunnel();
+});
+if (resetPinBtn) resetPinBtn.addEventListener("click", () => resetPin().catch((err) => alert(err.message)));
 closeWhiteboard.addEventListener("click", () => closeWhiteboardModal());
 wbNoteButton.addEventListener("click", () => postWhiteboardNote().catch((error) => alert(error.message)));
 wbNoteInput.addEventListener("keydown", (event) => {
@@ -1458,6 +1533,7 @@ document.querySelectorAll("[data-template]").forEach((button) => {
 
 setupVoice();
 updateTalkBackUi();
+pollTunnel();
 refresh().catch((error) => {
   gitStatus.textContent = error.message;
   setBusy(false);

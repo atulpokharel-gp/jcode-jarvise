@@ -1373,6 +1373,110 @@ button.primary::after {
   text-shadow: 0 0 14px rgba(255, 122, 217, 0.45);
 }
 
+/* --- remote access panel ----------------------------------- */
+.remote-panel {
+  padding: 20px;
+  border: 1px solid rgba(124, 199, 255, 0.18);
+  border-radius: 10px;
+  background: rgba(10, 18, 30, 0.7);
+  margin-bottom: 18px;
+}
+
+.remote-grid {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 20px;
+  align-items: start;
+  margin-top: 14px;
+}
+
+.remote-label {
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: rgba(200, 216, 240, 0.5);
+  display: block;
+  margin-bottom: 4px;
+}
+
+.remote-url-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(124, 199, 255, 0.05);
+  border: 1px solid rgba(124, 199, 255, 0.14);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 12px;
+}
+
+.remote-url {
+  flex: 1;
+  font-size: 13px;
+  color: #7cc7ff;
+  word-break: break-all;
+  font-family: inherit;
+}
+
+.remote-pin-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.remote-pin {
+  font-size: 22px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: #7cc7ff;
+  font-variant-numeric: tabular-nums;
+  min-width: 112px;
+}
+
+.icon-btn {
+  background: rgba(124, 199, 255, 0.07);
+  border: 1px solid rgba(124, 199, 255, 0.18);
+  border-radius: 6px;
+  color: #7cc7ff;
+  font-size: 14px;
+  padding: 4px 8px;
+  cursor: pointer;
+  line-height: 1;
+  transition: background 0.15s;
+  flex-shrink: 0;
+}
+.icon-btn:hover { background: rgba(124, 199, 255, 0.18); }
+
+.remote-hint {
+  font-size: 11px;
+  color: rgba(200, 216, 240, 0.4);
+  line-height: 1.5;
+  margin-top: 4px;
+}
+
+.remote-qr-block {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 96px;
+}
+
+.remote-qr {
+  width: 108px;
+  height: 108px;
+  border-radius: 6px;
+  border: 1px solid rgba(124, 199, 255, 0.2);
+  background: #fff;
+  object-fit: contain;
+}
+
+@media (max-width: 600px) {
+  .remote-grid { grid-template-columns: 1fr; }
+  .remote-qr-block { display: none; }
+}
+
 /* --- shared mesh panels ------------------------------------ */
 .mesh-grid {
   display: grid;

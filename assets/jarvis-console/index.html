@@ -166,6 +166,38 @@
         </article>
       </section>
 
+      <section class="remote-panel" aria-label="Remote access">
+        <div class="section-head compact">
+          <div>
+            <p class="eyebrow">Remote Access</p>
+            <h2>Connect from Anywhere</h2>
+          </div>
+          <span id="tunnelBadge" class="badge">connecting…</span>
+        </div>
+        <div class="remote-grid">
+          <div class="remote-url-block">
+            <label class="remote-label">Public URL</label>
+            <div class="remote-url-row">
+              <span id="remoteUrl" class="remote-url">Starting tunnel…</span>
+              <button id="copyUrlBtn" class="icon-btn" title="Copy URL">⧉</button>
+            </div>
+            <div class="remote-pin-row">
+              <label class="remote-label">PIN</label>
+              <span id="remotePin" class="remote-pin">••••••</span>
+              <button id="revealPinBtn" class="icon-btn" title="Reveal PIN">👁</button>
+              <button id="resetPinBtn" class="icon-btn" title="Generate new PIN">↻</button>
+            </div>
+            <p class="subtle remote-hint">
+              Share the URL + PIN to give anyone access to this console from any device or network.
+            </p>
+          </div>
+          <div class="remote-qr-block">
+            <img id="remoteQr" class="remote-qr" src="" alt="QR code" hidden />
+            <span id="remoteQrPlaceholder" class="subtle">QR appears when tunnel is ready</span>
+          </div>
+        </div>
+      </section>
+
       <section class="army-panel" aria-label="Agent army live topology">
         <div class="section-head compact">
           <div>
