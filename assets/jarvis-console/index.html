@@ -5,6 +5,9 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>Jcode Jarvis Console</title>
     <link rel="stylesheet" href="/styles.css" />
+    <!-- Monaco Editor (VS Code engine) -->
+    <script>var require = { paths: { vs: 'https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs' } };</script>
+    <script src="https://cdn.jsdelivr.net/npm/monaco-editor@0.52.0/min/vs/loader.js"></script>
   </head>
   <body>
     <div class="matrix-rain" aria-hidden="true">
@@ -231,6 +234,55 @@
           <span id="armySummary" class="badge">standing by</span>
         </div>
         <div id="armyBoard" class="army-board"></div>
+      </section>
+
+      <!-- ── Code Studio ── -->
+      <section class="studio-section" id="studioSection" aria-label="Live code studio">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Live Code View</p>
+            <h2>Code Studio</h2>
+          </div>
+          <div class="head-actions">
+            <span id="studioAgentBadge" class="badge">0 agents writing</span>
+            <div class="studio-layout-btns" id="studioLayoutBtns">
+              <button class="studio-layout-btn active" data-cols="1">▣</button>
+              <button class="studio-layout-btn" data-cols="2">⊞</button>
+              <button class="studio-layout-btn" data-cols="4">⊟</button>
+            </div>
+            <button id="studioToggleBtn" class="primary">Open Studio</button>
+          </div>
+        </div>
+
+        <div id="studioBody" class="studio-body" hidden>
+          <!-- Agent tabs -->
+          <div class="studio-tabbar" id="studioTabbar"></div>
+
+          <div class="studio-workspace">
+            <!-- File sidebar -->
+            <aside class="studio-sidebar" id="studioSidebar">
+              <div class="studio-sidebar-head">Files</div>
+              <div class="studio-file-tree" id="studioFileTree">
+                <p class="studio-empty">No files yet.</p>
+              </div>
+            </aside>
+
+            <!-- Editor panes (Monaco instances go here) -->
+            <div class="studio-editors" id="studioEditors" data-cols="1"></div>
+          </div>
+
+          <!-- VS Code-style status bar -->
+          <div class="studio-statusbar" id="studioStatusbar">
+            <span id="studioStatusAgent">No agent selected</span>
+            <span class="studio-status-sep">·</span>
+            <span id="studioStatusFile">—</span>
+            <span class="studio-status-sep">·</span>
+            <span id="studioStatusLines">0 lines</span>
+            <span class="studio-status-sep">·</span>
+            <span id="studioStatusLang">plaintext</span>
+            <span class="studio-status-right" id="studioStatusRight">Auto-refresh: on</span>
+          </div>
+        </div>
       </section>
 
       <section class="mesh-grid" aria-label="Inter-agent protocol and self-healing">

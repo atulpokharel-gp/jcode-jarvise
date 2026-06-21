@@ -2485,6 +2485,105 @@ def add_whiteboard_note(text: str, author: str = "master") -> dict[str, Any]:
         return hydrate_state(state)
 
 
+# ── Code Studio: live worktree file viewer ───────────────────────────────────
+
+_BINARY_EXTS = {
+    "png","jpg","jpeg","gif","svg","ico","webp","bmp","tiff",
+    "pdf","zip","tar","gz","bz2","7z","rar","exe","dll","so","dylib",
+    "woff","woff2","ttf","eot","otf","mp4","mp3","webm","avi","mov",
+    "db","sqlite","pyc","pyo","class","jar","war","bin","dat",
+}
+
+
+def _is_binary(path: Path) -> bool:
+    return path.suffix.lstrip(".").lower() in _BINARY_EXTS
+
+
+def studio_snapshot() -> list[dict[str, Any]]:
+    """Return each active agent with its recently modified files + content."""
+    with STATE_LOCK:
+        state = load_state()
+        poll_processes(state)
+    active_statuses = {"running", "starting", "healing", "testing"}
+    results: list[dict[str, Any]] = []
+    for idx, agent in enumerate(state.get("agents", [])):
+        if agent.get("status") not in active_statuses:
+            continue
+        worktree = Path(agent.get("worktree", ""))
+        if not worktree.exists():
+            continue
+        # Collect changed files: tracked modifications + untracked new files
+        diff_out   = run(["git", "diff", "--name-only", "HEAD"], cwd=worktree, check=False)
+        staged_out = run(["git", "diff", "--name-only", "--cached"], cwd=worktree, check=False)
+        untracked  = run(["git", "ls-files", "--others", "--exclude-standard"], cwd=worktree, check=False)
+        changed: dict[str, float] = {}
+        for line in (diff_out.stdout + staged_out.stdout + untracked.stdout).splitlines():
+            fname = line.strip()
+            if not fname:
+                continue
+            fpath = worktree / fname
+            if fpath.is_file() and not _is_binary(fpath):
+                try:
+                    changed[fname] = fpath.stat().st_mtime
+                except OSError:
+                    pass
+        # Sort by most recently modified (most active file first)
+        sorted_files = sorted(changed.items(), key=lambda x: x[1], reverse=True)
+        file_entries: list[dict[str, Any]] = []
+        for fname, mtime in sorted_files[:10]:
+            fpath = worktree / fname
+            try:
+                raw = fpath.read_text(encoding="utf-8", errors="replace")
+                content = raw[:80_000]
+                if len(raw) > 80_000:
+                    content += "\n\n// ... file truncated for studio view ..."
+                file_entries.append({
+                    "path":    fname,
+                    "content": content,
+                    "lines":   len(content.splitlines()),
+                    "mtime":   mtime,
+                })
+            except OSError:
+                continue
+        results.append({
+            "agent_id":   agent["id"],
+            "role":       agent.get("role", agent["id"]),
+            "status":     agent.get("status", ""),
+            "branch":     agent.get("branch", ""),
+            "color_idx":  idx % 8,
+            "files":      file_entries,
+            "active_file": file_entries[0] if file_entries else None,
+        })
+    return results
+
+
+def studio_file(agent_id: str, file_path: str) -> dict[str, Any]:
+    """Read a specific file from an agent's worktree on demand."""
+    with STATE_LOCK:
+        state = load_state()
+    agent = agent_by_id(state, agent_id)
+    if not agent:
+        raise RuntimeError(f"Unknown agent: {agent_id}")
+    worktree = Path(agent.get("worktree", ""))
+    target = (worktree / file_path).resolve()
+    if not str(target).startswith(str(worktree.resolve())):
+        raise PermissionError("Path is outside the agent worktree")
+    if not target.is_file():
+        raise FileNotFoundError(f"File not found: {file_path}")
+    if _is_binary(target):
+        raise ValueError("Binary files cannot be displayed in the studio")
+    raw = target.read_text(encoding="utf-8", errors="replace")
+    content = raw[:100_000]
+    if len(raw) > 100_000:
+        content += "\n\n// ... file truncated ..."
+    return {
+        "agent_id": agent_id,
+        "path":     file_path,
+        "content":  content,
+        "lines":    len(content.splitlines()),
+    }
+
+
 def merge_finished(auto_pr: bool = False) -> dict[str, Any]:
     with STATE_LOCK:
         state = load_state()
@@ -2958,6 +3057,14 @@ class Handler(BaseHTTPRequestHandler):
                 return
             if parsed.path == "/api/templates":
                 self.send_json(templates_load())
+                return
+            if parsed.path == "/api/studio/snapshot":
+                self.send_json(studio_snapshot())
+                return
+            if parsed.path == "/api/studio/file":
+                agent_id  = parse_qs(parsed.query).get("agent", [""])[0]
+                file_path = parse_qs(parsed.query).get("path",  [""])[0]
+                self.send_json(studio_file(agent_id, file_path))
                 return
             if parsed.path == "/api/diff":
                 self.send_json(diff_preview())

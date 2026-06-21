@@ -1559,6 +1559,488 @@ document.querySelectorAll("[data-template]").forEach((button) => {
   });
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// CODE STUDIO  — Multi-agent Monaco editor with live worktree sync
+// ═══════════════════════════════════════════════════════════════════════════
+
+const AGENT_PALETTE = [
+  '#00f0ff', // cyan
+  '#00ff9d', // green
+  '#bf00ff', // purple
+  '#ffc400', // amber
+  '#ff3ddd', // magenta
+  '#2979ff', // blue
+  '#ff5500', // orange
+  '#a855f7', // violet
+];
+
+// Language detection from file extension
+function studioLang(path) {
+  const ext = (path || '').split('.').pop().toLowerCase();
+  return {
+    js:'javascript', mjs:'javascript', cjs:'javascript',
+    ts:'typescript', tsx:'typescript', jsx:'javascript',
+    py:'python', rs:'rust', go:'go', java:'java', cs:'csharp',
+    css:'css', scss:'scss', less:'less',
+    html:'html', htm:'html', xml:'xml',
+    json:'json', jsonc:'json', json5:'json',
+    md:'markdown', mdx:'markdown',
+    sh:'shell', bash:'shell', zsh:'shell', fish:'shell',
+    yaml:'yaml', yml:'yaml', toml:'ini',
+    cpp:'cpp', cc:'cpp', cxx:'cpp', c:'c', h:'cpp',
+    rb:'ruby', php:'php', kt:'kotlin', swift:'swift',
+    dart:'dart', sql:'sql', r:'r', lua:'lua',
+    vue:'html', svelte:'html',
+  }[ext] || 'plaintext';
+}
+
+// Studio state
+let studioOpen          = false;
+let studioMonacoReady   = false;
+let studioLayout        = 1;
+let studioSelectedAgent = null;
+let studioLastSnap      = [];        // last snapshot for diffing
+let studioInterval      = null;
+const studioEditorMap   = new Map(); // agentId → {editor, model, container, decorIds}
+
+// DOM refs (may be null if studio section hidden)
+const studioSection     = document.getElementById('studioSection');
+const studioBody        = document.getElementById('studioBody');
+const studioToggleBtn   = document.getElementById('studioToggleBtn');
+const studioTabbar      = document.getElementById('studioTabbar');
+const studioEditorsCont = document.getElementById('studioEditors');
+const studioFileTree    = document.getElementById('studioFileTree');
+const studioSidebar     = document.getElementById('studioSidebar');
+const studioAgentBadge  = document.getElementById('studioAgentBadge');
+const studioLayoutBtns  = document.getElementById('studioLayoutBtns');
+const studioStatusAgent = document.getElementById('studioStatusAgent');
+const studioStatusFile  = document.getElementById('studioStatusFile');
+const studioStatusLines = document.getElementById('studioStatusLines');
+const studioStatusLang  = document.getElementById('studioStatusLang');
+const studioStatusRight = document.getElementById('studioStatusRight');
+
+// ── Jarvis dark theme definition ────────────────────────────────────────────
+const JARVIS_THEME_DEF = {
+  base: 'vs-dark', inherit: true,
+  rules: [
+    { token: '',             foreground: 'b8e8f0', background: '000608' },
+    { token: 'comment',      foreground: '2e6070', fontStyle: 'italic'  },
+    { token: 'comment.doc',  foreground: '2e7080', fontStyle: 'italic'  },
+    { token: 'string',       foreground: '00ff9d'  },
+    { token: 'string.escape',foreground: '00e8c0'  },
+    { token: 'keyword',      foreground: '00f0ff', fontStyle: 'bold'    },
+    { token: 'keyword.flow', foreground: '00d8ff'  },
+    { token: 'number',       foreground: 'ffc400'  },
+    { token: 'type',         foreground: 'bf00ff'  },
+    { token: 'type.identifier', foreground: 'c060ff' },
+    { token: 'function',     foreground: '2979ff'  },
+    { token: 'variable',     foreground: 'b8e8f0'  },
+    { token: 'variable.parameter', foreground: 'ff8a65' },
+    { token: 'constant',     foreground: 'ffc400'  },
+    { token: 'operator',     foreground: '00e0e8'  },
+    { token: 'delimiter',    foreground: '4a7080'  },
+    { token: 'tag',          foreground: '00f0ff'  },
+    { token: 'attribute.name',  foreground: 'ffc400' },
+    { token: 'attribute.value', foreground: '00ff9d' },
+    { token: 'metatag',      foreground: 'bf00ff'  },
+    { token: 'regexp',       foreground: 'ff3ddd'  },
+    { token: 'decorator',    foreground: 'a855f7'  },
+  ],
+  colors: {
+    'editor.background':              '#000608',
+    'editor.foreground':              '#b8e8f0',
+    'editorLineNumber.foreground':    '#2e5060',
+    'editorLineNumber.activeForeground': '#00f0ff',
+    'editor.lineHighlightBackground': '#00101880',
+    'editor.lineHighlightBorder':     '#00000000',
+    'editor.selectionBackground':     '#00f0ff26',
+    'editor.inactiveSelectionBackground': '#00f0ff14',
+    'editor.findMatchBackground':     '#00ff9d33',
+    'editor.findMatchHighlightBackground': '#00ff9d18',
+    'editorCursor.foreground':        '#00f0ff',
+    'editorCursor.background':        '#000608',
+    'editorGutter.background':        '#000608',
+    'editorGutter.modifiedBackground':'#00f0ff',
+    'editorGutter.addedBackground':   '#00ff9d',
+    'editorGutter.deletedBackground': '#ff0055',
+    'editorIndentGuide.background1':  '#0a2030',
+    'editorIndentGuide.activeBackground1': '#00f0ff40',
+    'editorBracketMatch.background':  '#00f0ff22',
+    'editorBracketMatch.border':      '#00f0ff',
+    'editorOverviewRuler.border':     '#00000000',
+    'scrollbar.shadow':               '#000000',
+    'scrollbarSlider.background':     '#2e506050',
+    'scrollbarSlider.hoverBackground':'#00f0ff40',
+    'scrollbarSlider.activeBackground':'#00f0ff70',
+    'minimap.background':             '#000608',
+    'editor.rangeHighlightBackground':'#00f0ff0a',
+    'editorWidget.background':        '#00080f',
+    'editorWidget.border':            '#00f0ff30',
+    'input.background':               '#00080f',
+    'input.border':                   '#00f0ff30',
+    'input.foreground':               '#b8e8f0',
+    'focusBorder':                    '#00f0ff60',
+  }
+};
+
+// ── Monaco init (lazy — only on studio open) ─────────────────────────────────
+function initMonaco(cb) {
+  if (studioMonacoReady) { cb(); return; }
+  if (typeof require === 'undefined') {
+    console.warn('[studio] Monaco loader not available');
+    return;
+  }
+  require(['vs/editor/editor.main'], () => {
+    monaco.editor.defineTheme('jarvis', JARVIS_THEME_DEF);
+    studioMonacoReady = true;
+    cb();
+  });
+}
+
+// ── Create / get a Monaco editor pane for an agent ───────────────────────────
+function ensureEditorPane(agentId, color) {
+  if (studioEditorMap.has(agentId)) return studioEditorMap.get(agentId);
+
+  // Outer pane
+  const pane = document.createElement('div');
+  pane.className = 'studio-pane';
+  pane.dataset.agent = agentId;
+  pane.style.setProperty('--agent-color', color);
+
+  // Pane header
+  const head = document.createElement('div');
+  head.className = 'studio-pane-head';
+  head.innerHTML = `
+    <span class="studio-pane-dot" style="background:${color};box-shadow:0 0 8px ${color}"></span>
+    <span class="studio-pane-role" id="pane-role-${agentId}">—</span>
+    <span class="studio-pane-file" id="pane-file-${agentId}">No files yet</span>
+    <span class="studio-pane-lines" id="pane-lines-${agentId}"></span>
+  `;
+  pane.appendChild(head);
+
+  // Monaco container
+  const monacoDiv = document.createElement('div');
+  monacoDiv.className = 'studio-monaco';
+  monacoDiv.id = `monaco-${agentId}`;
+  pane.appendChild(monacoDiv);
+
+  studioEditorsCont.appendChild(pane);
+
+  // Create editor
+  const model = monaco.editor.createModel('// Waiting for agent to write code…', 'plaintext');
+  const editor = monaco.editor.create(monacoDiv, {
+    model,
+    theme:          'jarvis',
+    readOnly:       true,
+    automaticLayout: true,
+    fontSize:        13,
+    fontFamily:      "'Share Tech Mono', 'Fira Code', 'Cascadia Code', monospace",
+    fontLigatures:   true,
+    lineHeight:      21,
+    minimap:         { enabled: studioLayout === 1, scale: 1 },
+    scrollBeyondLastLine: false,
+    smoothScrolling: true,
+    cursorBlinking: 'smooth',
+    renderLineHighlight: 'all',
+    roundedSelection: false,
+    padding:         { top: 12, bottom: 12 },
+    scrollbar: {
+      verticalScrollbarSize:   6,
+      horizontalScrollbarSize: 6,
+    },
+    overviewRulerLanes: 3,
+    glyphMargin: true,
+    folding:     true,
+    lineDecorationsWidth: 4,
+    lineNumbersMinChars:  3,
+  });
+
+  const entry = { editor, model, pane, color, decorIds: [] };
+  studioEditorMap.set(agentId, entry);
+  return entry;
+}
+
+// ── Update one editor with new content, highlighting changed lines ────────────
+function applyFileToEditor(agentId, filePath, content, color) {
+  const entry = studioEditorMap.get(agentId);
+  if (!entry) return;
+  const { editor, model, decorIds } = entry;
+
+  const lang = studioLang(filePath);
+  const oldContent = model.getValue();
+  const changed = oldContent !== content;
+
+  // Update language
+  monaco.editor.setModelLanguage(model, lang);
+
+  if (changed) {
+    // Find changed line numbers
+    const oldLines = oldContent.split('\n');
+    const newLines = content.split('\n');
+    const changedNums = [];
+    const maxLen = Math.max(oldLines.length, newLines.length);
+    for (let i = 0; i < maxLen; i++) {
+      if ((oldLines[i] || '') !== (newLines[i] || '')) changedNums.push(i + 1);
+    }
+
+    // Set content (preserves undo stack via edit operation)
+    const fullRange = model.getFullModelRange();
+    model.pushEditOperations([], [{
+      range: fullRange,
+      text: content,
+    }], () => null);
+
+    // Highlight changed lines with agent color
+    if (changedNums.length > 0 && changedNums.length < 400) {
+      const hex = color.replace('#', '');
+      // Inject dynamic CSS class for this agent's highlight color
+      let styleEl = document.getElementById(`studio-style-${agentId}`);
+      if (!styleEl) {
+        styleEl = document.createElement('style');
+        styleEl.id = `studio-style-${agentId}`;
+        document.head.appendChild(styleEl);
+      }
+      styleEl.textContent = `.studio-changed-${agentId} { background: ${color}18 !important; border-left: 2px solid ${color} !important; }`;
+
+      const newDecors = changedNums.map(line => ({
+        range: new monaco.Range(line, 1, line, 999),
+        options: {
+          isWholeLine:    true,
+          className:      `studio-changed-${agentId}`,
+          overviewRuler:  { color, position: monaco.editor.OverviewRulerLane.Left },
+          glyphMarginClassName: 'studio-glyph-changed',
+        },
+      }));
+
+      // Replace old decorations
+      const ids = editor.createDecorationsCollection(
+        entry.decorIds.length ? [] : newDecors
+      );
+      entry.decorIds = editor.deltaDecorations(entry.decorIds, newDecors);
+
+      // Scroll to first change
+      editor.revealLineInCenterIfOutsideViewport(changedNums[0], 1);
+
+      // Remove highlights after 4 seconds
+      setTimeout(() => {
+        entry.decorIds = editor.deltaDecorations(entry.decorIds, []);
+      }, 4000);
+    } else if (newLines.length > 0) {
+      // New content — scroll to bottom (agent is actively writing)
+      editor.revealLine(newLines.length, 1);
+    }
+  }
+
+  // Update pane header
+  const roleEl = document.getElementById(`pane-role-${agentId}`);
+  const fileEl = document.getElementById(`pane-file-${agentId}`);
+  const linesEl = document.getElementById(`pane-lines-${agentId}`);
+  if (roleEl && entry.role) roleEl.textContent = entry.role;
+  if (fileEl) fileEl.textContent = filePath.split('/').pop();
+  if (linesEl) linesEl.textContent = `${content.split('\n').length} lines`;
+}
+
+// ── Render agent tabs ────────────────────────────────────────────────────────
+function renderStudioTabs(snap) {
+  if (!studioTabbar) return;
+  const sel = studioSelectedAgent || (snap[0]?.agent_id);
+  studioTabbar.innerHTML = snap.map(a => {
+    const color  = AGENT_PALETTE[a.color_idx] || '#00f0ff';
+    const active = a.agent_id === sel ? ' active' : '';
+    const file   = a.active_file?.path?.split('/').pop() || 'idle';
+    return `
+      <button class="studio-tab${active}" data-agent="${a.agent_id}"
+              style="--tab-color:${color}" title="${escapeHtml(a.role)}">
+        <span class="studio-tab-dot" style="background:${color};box-shadow:0 0 6px ${color}"></span>
+        <span class="studio-tab-role">${escapeHtml((a.role||a.agent_id).split(' ').slice(0,2).join(' '))}</span>
+        <span class="studio-tab-file">${escapeHtml(file)}</span>
+        <span class="studio-tab-status studio-status-${a.status}"></span>
+      </button>`;
+  }).join('');
+  studioTabbar.querySelectorAll('.studio-tab').forEach(btn => {
+    btn.addEventListener('click', () => {
+      studioSelectedAgent = btn.dataset.agent;
+      renderStudioTabs(studioLastSnap);
+      renderStudioSidebar(studioLastSnap);
+      focusStudioAgent(studioSelectedAgent);
+    });
+  });
+}
+
+// ── Render file tree sidebar ─────────────────────────────────────────────────
+function renderStudioSidebar(snap) {
+  if (!studioFileTree) return;
+  const agent = snap.find(a => a.agent_id === studioSelectedAgent) || snap[0];
+  if (!agent || !agent.files?.length) {
+    studioFileTree.innerHTML = '<p class="studio-empty">No modified files yet.</p>';
+    return;
+  }
+  const color = AGENT_PALETTE[agent.color_idx] || '#00f0ff';
+  studioFileTree.innerHTML = agent.files.map(f => {
+    const name = f.path.split('/').pop();
+    const dir  = f.path.includes('/') ? f.path.split('/').slice(0, -1).join('/') : '';
+    return `
+      <div class="studio-file-item" data-agent="${agent.agent_id}" data-path="${escapeHtml(f.path)}"
+           title="${escapeHtml(f.path)}">
+        <span class="studio-file-icon">${fileIcon(f.path)}</span>
+        <div class="studio-file-info">
+          <span class="studio-file-name">${escapeHtml(name)}</span>
+          ${dir ? `<span class="studio-file-dir">${escapeHtml(dir)}</span>` : ''}
+        </div>
+        <span class="studio-file-lines">${f.lines}L</span>
+      </div>`;
+  }).join('');
+
+  studioFileTree.querySelectorAll('.studio-file-item').forEach(item => {
+    item.addEventListener('click', () => {
+      const ag  = item.dataset.agent;
+      const fp  = item.dataset.path;
+      const a   = snap.find(x => x.agent_id === ag);
+      const fObj = a?.files?.find(x => x.path === fp);
+      if (fObj && studioMonacoReady) {
+        applyFileToEditor(ag, fObj.path, fObj.content, AGENT_PALETTE[a.color_idx] || '#00f0ff');
+        updateStudioStatusbar(a, fObj);
+      }
+    });
+  });
+}
+
+// ── Focus / bring an agent's editor to top in split view ────────────────────
+function focusStudioAgent(agentId) {
+  if (!studioEditorMap.has(agentId)) return;
+  const { editor } = studioEditorMap.get(agentId);
+  editor.focus();
+}
+
+// ── Update the VS Code-style status bar ─────────────────────────────────────
+function updateStudioStatusbar(agent, file) {
+  if (!studioStatusAgent) return;
+  const color = AGENT_PALETTE[agent.color_idx] || '#00f0ff';
+  studioStatusAgent.textContent = agent.role || agent.agent_id;
+  studioStatusAgent.style.color = color;
+  studioStatusAgent.style.textShadow = `0 0 10px ${color}`;
+  if (file) {
+    studioStatusFile.textContent = file.path;
+    studioStatusLines.textContent = `${file.lines} lines`;
+    studioStatusLang.textContent = studioLang(file.path);
+  }
+}
+
+// ── File icon helper ─────────────────────────────────────────────────────────
+function fileIcon(path) {
+  const ext = (path||'').split('.').pop().toLowerCase();
+  const icons = {
+    js:'🟡', ts:'🔵', tsx:'🔵', jsx:'🟡', py:'🐍', rs:'🦀',
+    go:'🔵', java:'☕', cs:'🔷', css:'🎨', scss:'🎨',
+    html:'🌐', json:'📋', md:'📝', sh:'⚙️', yaml:'⚙️',
+    yml:'⚙️', sql:'🗄️', cpp:'⚙️', c:'⚙️', rb:'💎',
+    php:'🐘', kt:'🔵', swift:'🍎',
+  };
+  return icons[ext] || '📄';
+}
+
+// ── Main studio refresh ──────────────────────────────────────────────────────
+async function studioRefresh() {
+  if (!studioOpen || !studioMonacoReady) return;
+  try {
+    const snap = await api('/api/studio/snapshot');
+    studioLastSnap = snap;
+
+    // Update badge
+    if (studioAgentBadge) studioAgentBadge.textContent = `${snap.length} agent${snap.length !== 1 ? 's' : ''} writing`;
+
+    if (!snap.length) {
+      studioEditorsCont.innerHTML = '<div class="studio-idle"><p>Launch a swarm to watch agents code in real-time.</p><p class="subtle">Each agent\'s worktree files will appear here as they work.</p></div>';
+      if (studioTabbar) studioTabbar.innerHTML = '';
+      if (studioFileTree) studioFileTree.innerHTML = '<p class="studio-empty">No active agents.</p>';
+      return;
+    }
+
+    // Auto-select first agent if none selected
+    if (!studioSelectedAgent || !snap.find(a => a.agent_id === studioSelectedAgent)) {
+      studioSelectedAgent = snap[0].agent_id;
+    }
+
+    renderStudioTabs(snap);
+    renderStudioSidebar(snap);
+
+    // Decide which agents to show in panes (based on layout)
+    const slots = Math.min(studioLayout, snap.length);
+    // Primary agent always first
+    const ordered = [
+      ...snap.filter(a => a.agent_id === studioSelectedAgent),
+      ...snap.filter(a => a.agent_id !== studioSelectedAgent),
+    ].slice(0, slots);
+
+    // Remove panes for agents no longer shown
+    studioEditorMap.forEach((entry, agentId) => {
+      if (!ordered.find(a => a.agent_id === agentId)) {
+        entry.pane.remove();
+        entry.editor.dispose();
+        entry.model.dispose();
+        studioEditorMap.delete(agentId);
+      }
+    });
+
+    // Ensure panes exist and update content
+    for (const agent of ordered) {
+      const color = AGENT_PALETTE[agent.color_idx] || '#00f0ff';
+      const entry = ensureEditorPane(agent.agent_id, color);
+      entry.role  = agent.role;
+      if (agent.active_file) {
+        applyFileToEditor(agent.agent_id, agent.active_file.path, agent.active_file.content, color);
+      }
+    }
+
+    // Update minimap setting based on layout
+    studioEditorMap.forEach(({ editor }) => {
+      editor.updateOptions({ minimap: { enabled: studioLayout === 1 } });
+    });
+
+    // Update status bar for selected agent
+    const selAgent = snap.find(a => a.agent_id === studioSelectedAgent);
+    if (selAgent && selAgent.active_file) updateStudioStatusbar(selAgent, selAgent.active_file);
+
+    if (studioStatusRight) studioStatusRight.textContent = `Refreshed ${new Date().toLocaleTimeString()}`;
+  } catch (err) {
+    if (studioStatusRight) studioStatusRight.textContent = `Error: ${err.message}`;
+  }
+}
+
+// ── Set layout (1 / 2 / 4 columns) ──────────────────────────────────────────
+function setStudioLayout(cols) {
+  studioLayout = cols;
+  if (studioEditorsCont) studioEditorsCont.dataset.cols = String(cols);
+  studioLayoutBtns?.querySelectorAll('.studio-layout-btn').forEach(btn => {
+    btn.classList.toggle('active', Number(btn.dataset.cols) === cols);
+  });
+  // Force Monaco to re-layout
+  studioEditorMap.forEach(({ editor }) => editor.layout());
+  studioRefresh().catch(() => {});
+}
+
+studioLayoutBtns?.querySelectorAll('.studio-layout-btn').forEach(btn => {
+  btn.addEventListener('click', () => setStudioLayout(Number(btn.dataset.cols)));
+});
+
+// ── Toggle studio open/closed ────────────────────────────────────────────────
+studioToggleBtn?.addEventListener('click', () => {
+  studioOpen = !studioOpen;
+  if (studioBody) studioBody.hidden = !studioOpen;
+  if (studioToggleBtn) studioToggleBtn.textContent = studioOpen ? 'Close Studio' : 'Open Studio';
+  if (studioOpen) {
+    initMonaco(() => {
+      studioEditorsCont.dataset.cols = String(studioLayout);
+      studioRefresh().catch(() => {});
+      if (!studioInterval) {
+        studioInterval = setInterval(() => studioRefresh().catch(() => {}), 2500);
+      }
+    });
+  } else {
+    if (studioInterval) { clearInterval(studioInterval); studioInterval = null; }
+  }
+});
+
 // ── Cost / token meter ────────────────────────────────────────────────────
 function renderCost(state) {
   const cost = state.cost || {};
