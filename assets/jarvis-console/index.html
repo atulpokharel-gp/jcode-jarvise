@@ -494,6 +494,18 @@
         <div id="providerSettings" class="provider-settings"></div>
 
         <div class="settings-section">
+          <h3 class="settings-group-head">Agent Execution</h3>
+          <label class="toggle-row">
+            <input id="skipPermsToggle" type="checkbox" checked />
+            <span>Skip permission prompts (<code>--dangerously-skip-permissions</code>)</span>
+          </label>
+          <p class="subtle">
+            Recommended for unattended multi-agent runs. Agents will auto-approve
+            all tool calls (file writes, bash, etc.) without pausing.
+          </p>
+        </div>
+
+        <div class="settings-section">
           <h3 class="settings-group-head">Notifications</h3>
           <label for="webhookUrl">Webhook URL (POST on mission complete / fail)</label>
           <input id="webhookUrl" type="url" placeholder="https://hooks.slack.com/…" />

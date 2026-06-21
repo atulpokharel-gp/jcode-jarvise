@@ -1373,7 +1373,17 @@ pre {
   text-transform: uppercase; color: var(--cyan); margin-bottom: 10px;
   text-shadow: 0 0 10px var(--glow-c);
 }
-.settings-section input { width: 100%; margin-bottom: 10px; }
+.settings-section input[type="text"],
+.settings-section input[type="url"] { width: 100%; margin-bottom: 10px; }
+.toggle-row {
+  display: flex; align-items: center; gap: 10px;
+  font-family: 'Share Tech Mono', monospace; font-size: 13px;
+  color: var(--text); cursor: pointer; margin-bottom: 6px;
+}
+.toggle-row input[type="checkbox"] {
+  width: 16px; height: 16px; accent-color: var(--cyan);
+  cursor: pointer; flex-shrink: 0;
+}
 
 /* ── Diff preview modal ──────────────────────────────────────── */
 .diff-panel {

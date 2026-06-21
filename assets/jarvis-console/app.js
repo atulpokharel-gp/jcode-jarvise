@@ -94,6 +94,7 @@ const metricCost        = document.querySelector("#metricCost");
 const metricTokens      = document.querySelector("#metricTokens");
 const metricPending     = document.querySelector("#metricPending");
 const webhookUrl        = document.querySelector("#webhookUrl");
+const skipPermsToggle   = document.querySelector("#skipPermsToggle");
 const notifyPermBtn     = document.querySelector("#notifyPermBtn");
 const diffModal         = document.querySelector("#diffModal");
 const closeDiffModal    = document.querySelector("#closeDiffModal");
@@ -1299,6 +1300,7 @@ async function openSettings() {
   const settings = await api("/api/settings");
   renderSettings(settings);
   if (webhookUrl) webhookUrl.value = settings.notifications?.webhook_url || "";
+  if (skipPermsToggle) skipPermsToggle.checked = settings.agents?.skip_permissions !== false;
   settingsModal.hidden = false;
 }
 
@@ -1315,6 +1317,7 @@ function collectSettings() {
     strategy: strategySelect.value,
     providers,
     notifications: { webhook_url: webhookUrl?.value?.trim() || "" },
+    agents: { skip_permissions: skipPermsToggle?.checked !== false },
   };
 }
 

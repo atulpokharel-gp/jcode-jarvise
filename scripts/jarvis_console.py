@@ -398,6 +398,9 @@ def default_settings() -> dict[str, Any]:
         "notifications": {
             "webhook_url": "",  # POST on mission complete / agent fail / heal exhausted
         },
+        "agents": {
+            "skip_permissions": True,   # append --dangerously-skip-permissions to every spawn
+        },
         "devspace": {
             "enabled": False,
             "token": "",
@@ -549,6 +552,13 @@ def save_settings(incoming: dict[str, Any]) -> dict[str, Any]:
                     cleaned_models.append({"id": model_id[:160], "tier": tier, "cost": max(1, cost)})
                 if cleaned_models:
                     current["models"] = cleaned_models[:12]
+    if isinstance(incoming.get("agents"), dict):
+        ag = incoming["agents"]
+        if "skip_permissions" in ag:
+            settings.setdefault("agents", {})["skip_permissions"] = bool(ag["skip_permissions"])
+    if isinstance(incoming.get("notifications"), dict):
+        url = str(incoming["notifications"].get("webhook_url") or "").strip()
+        settings.setdefault("notifications", {})["webhook_url"] = url
     SETTINGS_FILE.write_text(json.dumps(settings, indent=2), encoding="utf-8")
     return load_settings(include_secrets=False)
 
@@ -1113,8 +1123,8 @@ def dispatch_healer(state: dict[str, Any], target: dict[str, Any], attempt: int)
         target["status"] = "failed"
         apcall(state, APCALL_HEAL_BUS, target["id"], "heal.abort", {"reason": str(exc)})
         return
-    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
     settings = load_settings(include_secrets=True)
+    extra_args = build_jcode_extra_args(settings)
     selection = select_healer_model(settings)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
     if not budget_ok(state):
@@ -1231,8 +1241,8 @@ def dispatch_restart(state: dict[str, Any], target: dict[str, Any]) -> bool:
         return False
     restarts[target["id"]] = restart_index
     spend_budget(state)
-    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
     settings = load_settings(include_secrets=True)
+    extra_args = build_jcode_extra_args(settings)
     selection = select_healer_model(settings)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
     whiteboard = state.get("whiteboard") or {}
@@ -1392,8 +1402,8 @@ def dispatch_qa(state: dict[str, Any], target: dict[str, Any], attempt: int) -> 
         jcode = resolve_jcode_binary()
     except RuntimeError:
         return False
-    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
     settings = load_settings(include_secrets=True)
+    extra_args = build_jcode_extra_args(settings)
     selection = select_healer_model(settings)
     model_args, model_env, provider_label, model_label = launch_args_for(selection)
     if not budget_ok(state):
@@ -2180,7 +2190,7 @@ Steps:
 """
     selection = select_agent_model({"task": "git merge conflict resolution"}, settings)
     _, model_env, provider_label, model_label = launch_args_for(selection)
-    extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
+    extra_args = build_jcode_extra_args(settings)
     _, model_args, _, _ = launch_args_for(selection)
     log_file = log_path.open("w", encoding="utf-8")
     child_env = os.environ.copy()
@@ -2209,6 +2219,103 @@ Steps:
     PROCESSES[resolver_id] = process
     state.setdefault("agents", []).append(resolver)
     apcall(state, "master", resolver_id, "task.dispatch", {"branch": agent.get("branch")}, f"Conflict resolver launched for {agent.get('branch')}")
+
+
+# ── Project context detection ────────────────────────────────────────────────
+
+def detect_project_type(workspace: Path) -> dict[str, str]:
+    """Detect language, package manager, and build/test commands from workspace files."""
+    w = workspace
+    if (w / "package.json").exists():
+        try:
+            pkg = json.loads((w / "package.json").read_text("utf-8", errors="replace"))
+            sc  = pkg.get("scripts", {})
+            pm  = "yarn" if (w / "yarn.lock").exists() else ("pnpm" if (w / "pnpm-lock.yaml").exists() else "npm")
+            return {
+                "lang":  "JavaScript/TypeScript",
+                "pm":    pm,
+                "build": sc.get("build", f"{pm} run build") if "build" in sc else "",
+                "test":  sc.get("test",  f"{pm} test")      if "test"  in sc else "",
+                "lint":  sc.get("lint",  f"{pm} run lint")  if "lint"  in sc else "",
+                "dev":   sc.get("dev",   "")                if "dev"   in sc else "",
+            }
+        except Exception:
+            return {"lang": "JavaScript/TypeScript"}
+    if any((w / f).exists() for f in ("pyproject.toml", "setup.py", "requirements.txt")):
+        return {
+            "lang":  "Python",
+            "build": "",
+            "test":  "pytest" if shutil.which("pytest") else "python -m pytest",
+            "lint":  "ruff check ." if shutil.which("ruff") else "",
+        }
+    if (w / "go.mod").exists():
+        return {"lang": "Go", "build": "go build ./...", "test": "go test ./..."}
+    if (w / "Cargo.toml").exists():
+        return {"lang": "Rust", "build": "cargo build", "test": "cargo test", "lint": "cargo clippy"}
+    if (w / "pom.xml").exists():
+        return {"lang": "Java/Maven", "build": "mvn package -q", "test": "mvn test -q"}
+    if list(w.glob("*.sln")) or list(w.glob("*.csproj")):
+        return {"lang": "C#/.NET", "build": "dotnet build", "test": "dotnet test"}
+    if (w / "Gemfile").exists():
+        return {"lang": "Ruby", "build": "bundle install", "test": "bundle exec rspec"}
+    return {}
+
+
+def write_agent_claude_md(worktree: Path, agent: dict[str, Any], project: dict[str, str]) -> None:
+    """Write .claude/CLAUDE.md so jcode reads agent workflow instructions automatically."""
+    lang  = project.get("lang", "")
+    pm    = project.get("pm", "")
+    build = project.get("build", "")
+    test  = project.get("test", "")
+    lint  = project.get("lint", "")
+
+    verify_cmds = [c for c in [lint, build, test] if c]
+    verify_block = ""
+    if verify_cmds:
+        cmds_str = "\n".join(f"- `{c}`" for c in verify_cmds)
+        verify_block = f"""
+## Verification — REQUIRED before every commit
+Run in order; fix any failures before committing:
+{cmds_str}
+"""
+    install_hint = f"\nIf dependencies are missing, run `{pm} install` first." if pm else ""
+
+    content = f"""# Agent: {agent['id']} / {agent['role']}
+
+## Assignment
+{agent['task']}
+
+## Project language
+{lang or 'Detect from workspace files.'}{install_hint}
+
+## Required workflow
+1. **Explore** — run `ls`, `git log --oneline -5`, read files relevant to your task.
+2. **Understand** — read existing code your changes will touch.
+3. **Implement** — make changes scoped strictly to your assignment.
+4. **Verify** — run build + test; fix all errors before committing.
+5. **Commit** — `git add -A && git commit -m "<type>: <message>"` — never leave uncommitted work.
+6. **Report** — files changed, commands that passed, risks, blockers.
+{verify_block}
+## Scope rules
+- Stay inside this worktree and branch only.
+- Do not modify files owned by other agents' roles.
+- If blocked on another agent's interface, stub it cleanly and document the blocker.
+- Always commit completed work — the console only sees committed changes.
+"""
+    claude_dir = worktree / ".claude"
+    claude_dir.mkdir(exist_ok=True)
+    (claude_dir / "CLAUDE.md").write_text(content, "utf-8")
+
+
+def build_jcode_extra_args(settings: dict[str, Any] | None = None) -> list[str]:
+    """Return base extra args for all jcode agent spawns (env + settings merged)."""
+    args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
+    if settings is None:
+        settings = load_settings(include_secrets=False)
+    if settings.get("agents", {}).get("skip_permissions", True):
+        if "--dangerously-skip-permissions" not in args:
+            args.append("--dangerously-skip-permissions")
+    return args
 
 
 # ── MCP Connector Hub ────────────────────────────────────────────────────────
@@ -2353,42 +2460,61 @@ def try_launch_pending(state: dict[str, Any]) -> int:
 
 # ── Agent prompts ───────────────────────────────────────────────────────────
 
-def worker_prompt(agent: dict[str, Any], headline: str, team_roles: list[str]) -> str:
-    return f"""You are {agent['role']}, a worker on a team run by the Jarvis master.
+def worker_prompt(
+    agent: dict[str, Any],
+    headline: str,
+    team_roles: list[str],
+    project: dict[str, str] | None = None,
+) -> str:
+    project = project or {}
+    lang  = project.get("lang", "")
+    pm    = project.get("pm", "")
+    build = project.get("build", "")
+    test  = project.get("test", "")
+    lint  = project.get("lint", "")
 
-The master holds the full project context. You are given only the compact work
-order you need for your task -- work to it precisely and do not try to rebuild
-the whole project or another agent's scope.
+    lang_line = f"\nProject language/stack: {lang}" if lang else ""
+    install_hint = f"\nInstall deps first: `{pm} install`" if pm else ""
+    verify_cmds = [c for c in [lint, build, test] if c]
+    verify_section = ""
+    if verify_cmds:
+        steps = "\n".join(f"  {i+1}. `{c}`" for i, c in enumerate(verify_cmds))
+        verify_section = f"""
+Before committing, verify your code actually works:
+{steps}
+Fix all errors/warnings before committing.
+"""
 
-Project (headline only):
+    return f"""You are {agent['role']}, a specialist worker deployed by the Jarvis master.
+{lang_line}{install_hint}
+
+Mission:
 {headline}
 
 Your assignment:
 {agent['task']}
 
-Other agents own these scopes -- stay out of them and assume a clean interface
-where you need their work:
+Other agents own these scopes — stay out and assume a clean interface:
 {team_boundaries(agent, team_roles)}
 
-Rules:
+Required workflow:
+1. EXPLORE — run `ls`, `git log --oneline -5`, read files relevant to your task first.
+2. IMPLEMENT — write code for your assignment only; do not expand scope.
+3. VERIFY — run build and test commands below to confirm correctness.
+4. COMMIT — commit all changes (`git add -A && git commit -m "..."`) before finishing.
+5. REPORT — end with: files changed, commands run, risks, blockers.
+{verify_section}
+Additional rules:
 - Work only in your current git worktree and branch.
-- Keep changes tight to your assignment; do not expand scope.
-- If you are blocked on something another agent owns, note it and stub a clean
-  interface rather than building it yourself.
-- If your work has a UI, you may use the built-in `browser` tool to check it
-  renders (run `browser setup` first if needed). A QA agent will verify it after.
-- Commit your completed changes before finishing.
-- End with a concise report: files changed, validation run, risks, and blockers.
+- If blocked on another agent's work, stub a clean interface and note the blocker.
+- If your work has a UI, use the built-in `browser` tool to verify it renders.
+- A QA agent will verify your output — make the build and tests pass.
 
-Central Memory (shared with all agents on this mission):
-The Jarvis console exposes a shared memory store at $JARVIS_MEMORY_URL.
-- READ:  curl "$JARVIS_MEMORY_URL" (returns JSON array of memories)
-- WRITE: curl -s -X POST "$JARVIS_MEMORY_URL" -H "Content-Type: application/json" \\
-           -d '{{"key":"<unique-key>","summary":"<what you learned>","agent_id":"{agent['id']}","tags":"<comma,tags>"}}'
-- DELETE: curl -s -X DELETE "$JARVIS_MEMORY_URL/<key>"
-Write a memory entry when you discover something other agents need to know:
-API contracts, file locations, env vars, important decisions, or blockers.
-Read memory before starting to avoid duplicating work already done.
+Central Memory (shared across all agents on this mission):
+  READ:  curl "$JARVIS_MEMORY_URL"
+  WRITE: curl -s -X POST "$JARVIS_MEMORY_URL" -H "Content-Type: application/json" \\
+           -d '{{"key":"<key>","summary":"<what you found>","agent_id":"{agent['id']}","tags":"<tags>"}}'
+Read memory before starting; write when you discover something others need to know.
 """
 
 
@@ -2458,8 +2584,10 @@ def _spawn_worker(
     agent["model"] = model_label
     headline = mission_headline(str(state.get("whiteboard", {}).get("mission") or item.get("task") or ""))
     team_roles = [a.get("role", "") for a in state.get("agents", []) if a.get("kind") not in ("healer", "qa", "resolver")]
+    project = detect_project_type(workspace)
+    write_agent_claude_md(worktree, agent, project)
     rag = rag_context(item.get("task", ""), workspace)
-    prompt = worker_prompt(agent, headline, team_roles) + rag
+    prompt = worker_prompt(agent, headline, team_roles, project) + rag
     log_file = log_path.open("w", encoding="utf-8")
     child_env = os.environ.copy()
     child_env.update(model_env)
@@ -2506,8 +2634,8 @@ def start_workers(task: str, plan: list[dict[str, str]]) -> dict[str, Any]:
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
         base_branch = current_branch(workspace)
         jcode = resolve_jcode_binary()
-        extra_args = shlex.split(os.environ.get("JARVIS_JCODE_ARGS", ""), posix=os.name != "nt")
         settings = load_settings(include_secrets=True)
+        extra_args = build_jcode_extra_args(settings)
         plan = clean_plan(plan)
         if not plan:
             raise RuntimeError("Plan is empty.")
