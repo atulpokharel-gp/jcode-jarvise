@@ -456,6 +456,7 @@ function renderAgents(agents) {
     const node = document.createElement("article");
     node.className = `agent ${agent.kind === "healer" ? "agent-healer" : ""}`;
     if (openConsoles.has(agent.id)) node.classList.add("selected");
+    const lastLine = agent.last_line ? `<div class="agent-last-line">${escapeHtml(agent.last_line)}</div>` : "";
     node.innerHTML = `
       <header>
         <strong>${escapeHtml(agent.id)}</strong>
@@ -463,6 +464,7 @@ function renderAgents(agents) {
       </header>
       <p>${escapeHtml(agent.role)}</p>
       <small>${escapeHtml(agent.task)}</small>
+      ${lastLine}
       <small>branch: ${escapeHtml(agent.branch || "pending")}</small>
       <small class="model-route">model: ${escapeHtml(agent.provider || "pending")}/${escapeHtml(agent.model || "pending")}</small>
       <small>pid: ${escapeHtml(agent.pid || "-")}</small>
@@ -618,18 +620,30 @@ function renderConsoleDeck(agents) {
           <span class="lc-dot"></span>
           <strong class="lc-title"></strong>
           <span class="lc-status"></span>
+          <span class="lc-line-count"></span>
           <span class="lc-actions">
+            <button data-act="copy" title="Copy log">&#x2398;</button>
             <button data-act="min" title="Minimize">_</button>
             <button data-act="stop" title="Stop">&#9632;</button>
             <button data-act="close" title="Close">&times;</button>
           </span>
         </header>
-        <pre class="lc-log">Connecting to agent stream...</pre>
+        <div class="lc-log"></div>
       `;
       consoleDeck.appendChild(win);
       makeConsoleDraggable(win, win.querySelector(".lc-head"));
-      win.querySelector('[data-act="min"]').addEventListener("click", () => win.classList.toggle("minimized"));
-      win.querySelector('[data-act="close"]').addEventListener("click", () => closeConsole(agentId));
+      win.querySelector('[data-act="min"]').addEventListener("click", () => {
+        win.classList.toggle("minimized");
+        if (!win.classList.contains("minimized")) pollConsoleLogs();
+      });
+      win.querySelector('[data-act="copy"]').addEventListener("click", () => {
+        const text = [...win.querySelectorAll(".ll")].map(el => el.textContent).join("\n");
+        navigator.clipboard.writeText(text).catch(() => {});
+      });
+      win.querySelector('[data-act="close"]').addEventListener("click", () => {
+        resetLogOffset(agentId);
+        closeConsole(agentId);
+      });
       win.querySelector('[data-act="stop"]').addEventListener("click", () => {
         const a = latestAgents.find((item) => item.id === agentId);
         if (a && a.kind !== "healer" && ["failed", "conflict"].includes(String(a.status))) {
@@ -658,6 +672,38 @@ function renderConsoleDeck(agents) {
   });
 }
 
+// ── Log rendering helpers ────────────────────────────────────────────────────
+
+const _ansiRe = /\x1b\[[0-9;]*[mGKHJA-Z]/g;
+function stripAnsi(s) { return s.replace(_ansiRe, "").replace(/\r/g, ""); }
+
+function logLineClass(raw) {
+  const s = stripAnsi(raw).toLowerCase();
+  if (/\berror\b|failed|exception|fatal|traceback|syntax error/.test(s)) return "ll-error";
+  if (/\bwarn(ing)?\b/.test(s))                              return "ll-warn";
+  if (/\btool:\s*(write|edit|create)|writing\b|updated?\s+file|creating file/.test(s)) return "ll-file";
+  if (/git (commit|push|add)|committed\b|changes committed/.test(s))         return "ll-commit";
+  if (/✓|passed|success|done|complete|all tests/.test(s))   return "ll-ok";
+  if (/bash\(|running\s+`|executing\s+`|\$\s+\w/.test(s))   return "ll-cmd";
+  return "";
+}
+
+function appendLogLines(logEl, lines) {
+  const frag = document.createDocumentFragment();
+  for (const raw of lines) {
+    const el = document.createElement("div");
+    el.className = "ll " + logLineClass(raw);
+    el.textContent = stripAnsi(raw);
+    frag.appendChild(el);
+  }
+  logEl.appendChild(frag);
+}
+
+// Track how many lines each console has already loaded
+const _logOffsets = {}; // agentId -> number of lines displayed so far
+
+function resetLogOffset(agentId) { delete _logOffsets[agentId]; }
+
 async function pollConsoleLogs() {
   const ids = [...openConsoles].filter((id) => {
     const win = document.getElementById(consoleIdFor(id));
@@ -666,16 +712,49 @@ async function pollConsoleLogs() {
   await Promise.all(
     ids.map(async (id) => {
       try {
-        const response = await api(`/api/agent/log?id=${encodeURIComponent(id)}`);
+        const after = _logOffsets[id] || 0;
+        const res = await api(`/api/agent/log?id=${encodeURIComponent(id)}&after=${after}`);
         const win = document.getElementById(consoleIdFor(id));
         if (!win) return;
         const log = win.querySelector(".lc-log");
-        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 40;
-        log.textContent = response.log || "Waiting for output...";
+        if (!log) return;
+
+        const atBottom = log.scrollHeight - log.scrollTop - log.clientHeight < 60;
+
+        if (after === 0) {
+          // First load: clear placeholder, show initial batch
+          log.innerHTML = "";
+          if (res.lines && res.lines.length) {
+            appendLogLines(log, res.lines);
+          } else {
+            const placeholder = document.createElement("div");
+            placeholder.className = "ll ll-muted";
+            placeholder.textContent = "Waiting for agent output…";
+            log.appendChild(placeholder);
+          }
+        } else if (res.lines && res.lines.length) {
+          // Remove placeholder if present
+          const placeholder = log.querySelector(".ll-muted");
+          if (placeholder) placeholder.remove();
+          appendLogLines(log, res.lines);
+        }
+
+        _logOffsets[id] = (res.start_line || 0) + (res.lines?.length || 0);
+
+        // Update line counter
+        const counter = win.querySelector(".lc-line-count");
+        if (counter) counter.textContent = `${res.total_lines || 0} lines`;
+
+        // Update running indicator
+        win.classList.toggle("lc-running", !!res.running);
+
         if (atBottom) log.scrollTop = log.scrollHeight;
       } catch (error) {
         const win = document.getElementById(consoleIdFor(id));
-        if (win) win.querySelector(".lc-log").textContent = error.message;
+        if (win) {
+          const log = win.querySelector(".lc-log");
+          if (log && !log.children.length) log.textContent = error.message;
+        }
       }
     }),
   );

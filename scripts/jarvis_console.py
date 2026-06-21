@@ -660,6 +660,28 @@ def hydrate_state(state: dict[str, Any]) -> dict[str, Any]:
         state["jcode_available"] = False
     state["settings"] = settings_summary()
     state["service"] = service_status()
+    # Inject last_line from log tail for active agents (2 KB seek, ANSI-stripped)
+    _ansi_re = re.compile(r"\x1b\[[0-9;]*[mGKHJA-Z]")
+    for agent in state.get("agents", []):
+        if agent.get("status") not in ("running", "starting", "healing", "testing"):
+            continue
+        log_path_str = str(agent.get("log") or "")
+        if not log_path_str:
+            continue
+        try:
+            lp = Path(log_path_str)
+            if not lp.exists():
+                continue
+            with lp.open("rb") as fh:
+                fh.seek(0, 2)
+                size = fh.tell()
+                fh.seek(max(0, size - 2048))
+                tail = fh.read().decode("utf-8", errors="replace")
+            lines = [l.strip() for l in tail.splitlines() if l.strip()]
+            last = lines[-1] if lines else ""
+            agent["last_line"] = _ansi_re.sub("", last)[:120]
+        except Exception:
+            pass
     return state
 
 
@@ -2693,7 +2715,7 @@ def agent_by_id(state: dict[str, Any], agent_id: str) -> dict[str, Any] | None:
     return None
 
 
-def read_agent_log(agent_id: str) -> dict[str, Any]:
+def read_agent_log(agent_id: str, after_line: int = 0) -> dict[str, Any]:
     with STATE_LOCK:
         state = load_state()
         poll_processes(state)
@@ -2702,12 +2724,30 @@ def read_agent_log(agent_id: str) -> dict[str, Any]:
             raise RuntimeError(f"Unknown agent: {agent_id}")
         raw_log_path = str(agent.get("log") or "").strip()
         if not raw_log_path:
-            return {"id": agent_id, "log": ""}
+            return {"id": agent_id, "lines": [], "total_lines": 0, "start_line": 0, "running": False}
         log_path = Path(raw_log_path)
         if not log_path.exists() or not log_path.is_file():
-            return {"id": agent_id, "log": ""}
-        text = log_path.read_text(encoding="utf-8", errors="replace")
-        return {"id": agent_id, "log": text[-24000:]}
+            return {"id": agent_id, "lines": [], "total_lines": 0, "start_line": 0, "running": False}
+        all_lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+        total = len(all_lines)
+        running = bool(
+            agent_id in PROCESSES and PROCESSES[agent_id].poll() is None
+        )
+        # First load: cap at last 300 lines so the UI doesn't stall on huge logs
+        if after_line == 0 and total > 300:
+            start = total - 300
+        else:
+            start = max(0, after_line)
+        new_lines = all_lines[start:]
+        last_line = next((l.strip() for l in reversed(all_lines) if l.strip()), "")
+        return {
+            "id":          agent_id,
+            "lines":       new_lines,
+            "total_lines": total,
+            "start_line":  start,
+            "running":     running,
+            "last_line":   last_line,
+        }
 
 
 def stop_agent(agent_id: str) -> dict[str, Any]:
@@ -3355,8 +3395,13 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_json(hydrate_state(state))
                 return
             if parsed.path == "/api/agent/log":
-                agent_id = parse_qs(parsed.query).get("id", [""])[0]
-                self.send_json(read_agent_log(agent_id))
+                agent_id  = parse_qs(parsed.query).get("id", [""])[0]
+                after_raw = parse_qs(parsed.query).get("after", ["0"])[0]
+                try:
+                    after = max(0, int(after_raw))
+                except ValueError:
+                    after = 0
+                self.send_json(read_agent_log(agent_id, after))
                 return
             if parsed.path == "/api/settings":
                 self.send_json(load_settings(include_secrets=False))

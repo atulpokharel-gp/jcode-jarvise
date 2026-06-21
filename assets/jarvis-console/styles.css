@@ -975,8 +975,8 @@ pre {
   backdrop-filter: blur(10px);
 }
 .lc-head {
-  display: flex; align-items: center; justify-content: space-between;
-  gap: 8px; padding: 9px 12px;
+  display: flex; align-items: center;
+  gap: 6px; padding: 7px 10px;
   border-bottom: 1px solid rgba(0,240,255,0.14);
   background: rgba(0,240,255,0.04);
   cursor: move; border-radius: 10px 10px 0 0;
@@ -990,16 +990,37 @@ pre {
   border-radius: 4px;
 }
 .lc-log {
-  flex: 1; overflow: auto; padding: 10px 12px;
+  flex: 1; overflow: auto; padding: 8px 12px;
   font-family: 'Share Tech Mono', monospace; font-size: 11px;
-  line-height: 1.55; color: rgba(180,240,200,0.75);
-  white-space: pre-wrap; word-break: break-all;
+  line-height: 1.5; color: rgba(180,240,200,0.8);
 }
+/* Incremental log line types */
+.ll { display: block; white-space: pre-wrap; word-break: break-all; padding: 0 2px; border-radius: 2px; }
+.ll-error  { color: var(--red);    background: rgba(255,0,85,0.07); }
+.ll-warn   { color: var(--amber); }
+.ll-ok     { color: var(--green);  text-shadow: 0 0 6px var(--green); }
+.ll-commit { color: var(--cyan);   text-shadow: 0 0 4px var(--glow-c); }
+.ll-file   { color: var(--violet); }
+.ll-cmd    { color: rgba(180,240,200,0.55); font-style: italic; }
+.ll-muted  { color: var(--muted); font-style: italic; }
 .lc-running   { border-color: rgba(0,240,255,0.45); }
 .lc-failed    { border-color: rgba(255,0,85,0.45);  }
 .lc-healing   { border-color: rgba(255,61,221,0.45); }
 .lc-testing   { border-color: rgba(41,121,255,0.45); }
 .lc-healer    { border-color: rgba(255,61,221,0.45); }
+/* Line counter in header */
+.lc-line-count {
+  font-family: 'Share Tech Mono', monospace; font-size: 9px;
+  color: var(--muted); margin-left: auto; flex-shrink: 0;
+}
+/* Agent card: last active line */
+.agent-last-line {
+  font-family: 'Share Tech Mono', monospace; font-size: 10px;
+  color: var(--cyan); opacity: 0.75;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  max-width: 100%; margin: 2px 0;
+  animation: terminalBlink 1.2s step-end infinite;
+}
 
 /* ── Modal ───────────────────────────────────────────────────── */
 .modal {
