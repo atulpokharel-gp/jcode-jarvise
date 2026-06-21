@@ -24,6 +24,7 @@ from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
+import sqlite3
 from urllib.parse import parse_qs, quote, urlparse
 
 
@@ -38,6 +39,9 @@ SESSIONS_DIR = STATE_DIR / "sessions"
 PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 DISPATCH_QUEUE: list[dict[str, Any]] = []  # pending healer/QA jobs waiting for a slot
 STATE_LOCK = threading.Lock()
+MEMORY_LOCK = threading.Lock()
+MEMORY_DB = STATE_DIR / "memory.db"
+SERVER_PORT = DEFAULT_PORT  # updated in main() to reflect --port flag
 # Remote access — PIN auth + Cloudflare Tunnel
 SESSION_TOKENS: dict[str, float] = {}  # token -> expiry unix timestamp
 SESSION_LOCK = threading.Lock()
@@ -1023,6 +1027,7 @@ def dispatch_healer(state: dict[str, Any], target: dict[str, Any], attempt: int)
     log_file = healer_log.open("w", encoding="utf-8")
     child_env = os.environ.copy()
     child_env.update(model_env)
+    child_env["JARVIS_MEMORY_URL"] = f"http://127.0.0.1:{SERVER_PORT}/api/memory"
     process = subprocess.Popen(
         [jcode, *extra_args, *model_args, "run", prompt],
         cwd=str(worktree),
@@ -1127,6 +1132,7 @@ def dispatch_restart(state: dict[str, Any], target: dict[str, Any]) -> bool:
     log_file = log_path.open("w", encoding="utf-8")
     child_env = os.environ.copy()
     child_env.update(model_env)
+    child_env["JARVIS_MEMORY_URL"] = f"http://127.0.0.1:{SERVER_PORT}/api/memory"
     process = subprocess.Popen(
         [jcode, *extra_args, *model_args, "run", prompt],
         cwd=str(new_worktree),
@@ -1300,6 +1306,7 @@ def dispatch_qa(state: dict[str, Any], target: dict[str, Any], attempt: int) -> 
     log_file = qa_log.open("w", encoding="utf-8")
     child_env = os.environ.copy()
     child_env.update(model_env)
+    child_env["JARVIS_MEMORY_URL"] = f"http://127.0.0.1:{SERVER_PORT}/api/memory"
     process = subprocess.Popen(
         [jcode, *extra_args, *model_args, "run", prompt],
         cwd=str(worktree),
@@ -1693,6 +1700,105 @@ def team_boundaries(agent: dict[str, Any], team_roles: list[str]) -> str:
     return "\n".join(f"- {role}" for role in others)
 
 
+# ── Central agent memory (SQLite) ──────────────────────────────────────────
+
+def memory_init() -> None:
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    with sqlite3.connect(MEMORY_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS memories (
+                id        INTEGER PRIMARY KEY AUTOINCREMENT,
+                key       TEXT    NOT NULL,
+                summary   TEXT    NOT NULL DEFAULT '',
+                agent_id  TEXT    NOT NULL DEFAULT '',
+                mission_id TEXT   NOT NULL DEFAULT '',
+                tags      TEXT    NOT NULL DEFAULT '',
+                payload   TEXT    NOT NULL DEFAULT '',
+                ts        REAL    NOT NULL
+            )
+        """)
+        conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_mem_key ON memories(key)")
+        conn.commit()
+
+
+def memory_write(
+    key: str,
+    summary: str,
+    agent_id: str = "",
+    mission_id: str = "",
+    tags: str = "",
+    payload: str = "",
+) -> dict[str, Any]:
+    key = key.strip()[:200]
+    if not key:
+        raise ValueError("memory key is required")
+    ts = time.time()
+    with MEMORY_LOCK, sqlite3.connect(MEMORY_DB) as conn:
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute(
+            """
+            INSERT INTO memories (key, summary, agent_id, mission_id, tags, payload, ts)
+            VALUES (?,?,?,?,?,?,?)
+            ON CONFLICT(key) DO UPDATE SET
+                summary=excluded.summary,
+                agent_id=excluded.agent_id,
+                mission_id=excluded.mission_id,
+                tags=excluded.tags,
+                payload=excluded.payload,
+                ts=excluded.ts
+            """,
+            (key, summary[:2000], agent_id[:80], mission_id[:80], tags[:200], payload[:4000], ts),
+        )
+        conn.commit()
+    return {"ok": True, "key": key, "ts": ts}
+
+
+def memory_read(
+    q: str = "",
+    mission_id: str = "",
+    tag: str = "",
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    with MEMORY_LOCK, sqlite3.connect(MEMORY_DB) as conn:
+        conn.row_factory = sqlite3.Row
+        clauses: list[str] = []
+        params: list[Any] = []
+        if q:
+            clauses.append("(key LIKE ? OR summary LIKE ? OR tags LIKE ?)")
+            like = f"%{q}%"
+            params += [like, like, like]
+        if mission_id:
+            clauses.append("mission_id = ?")
+            params.append(mission_id)
+        if tag:
+            clauses.append("tags LIKE ?")
+            params.append(f"%{tag}%")
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        rows = conn.execute(
+            f"SELECT * FROM memories {where} ORDER BY ts DESC LIMIT ?",
+            [*params, min(limit, 500)],
+        ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def memory_delete(key: str) -> dict[str, Any]:
+    with MEMORY_LOCK, sqlite3.connect(MEMORY_DB) as conn:
+        conn.execute("DELETE FROM memories WHERE key = ?", (key,))
+        conn.commit()
+    return {"ok": True, "key": key}
+
+
+def memory_clear() -> dict[str, Any]:
+    with MEMORY_LOCK, sqlite3.connect(MEMORY_DB) as conn:
+        count = conn.execute("SELECT COUNT(*) FROM memories").fetchone()[0]
+        conn.execute("DELETE FROM memories")
+        conn.commit()
+    return {"ok": True, "deleted": count}
+
+
+# ── Agent prompts ───────────────────────────────────────────────────────────
+
 def worker_prompt(agent: dict[str, Any], headline: str, team_roles: list[str]) -> str:
     return f"""You are {agent['role']}, a worker on a team run by the Jarvis master.
 
@@ -1719,6 +1825,16 @@ Rules:
   renders (run `browser setup` first if needed). A QA agent will verify it after.
 - Commit your completed changes before finishing.
 - End with a concise report: files changed, validation run, risks, and blockers.
+
+Central Memory (shared with all agents on this mission):
+The Jarvis console exposes a shared memory store at $JARVIS_MEMORY_URL.
+- READ:  curl "$JARVIS_MEMORY_URL" (returns JSON array of memories)
+- WRITE: curl -s -X POST "$JARVIS_MEMORY_URL" -H "Content-Type: application/json" \\
+           -d '{{"key":"<unique-key>","summary":"<what you learned>","agent_id":"{agent['id']}","tags":"<comma,tags>"}}'
+- DELETE: curl -s -X DELETE "$JARVIS_MEMORY_URL/<key>"
+Write a memory entry when you discover something other agents need to know:
+API contracts, file locations, env vars, important decisions, or blockers.
+Read memory before starting to avoid duplicating work already done.
 """
 
 
@@ -1746,6 +1862,10 @@ Rules:
 - Make your assignment actually work: build, run, and verify what you can.
 - Commit your repair before finishing.
 - End with a concise report: root cause, the fix, and how you verified it.
+
+Central Memory: check $JARVIS_MEMORY_URL for context left by other agents.
+Write a memory entry describing the root cause and fix so the team learns from it.
+curl -s "$JARVIS_MEMORY_URL" | python3 -c "import sys,json;[print(r['key'],':',r['summary']) for r in json.load(sys.stdin)]"
 """
 
 
@@ -2411,6 +2531,13 @@ class Handler(BaseHTTPRequestHandler):
                 raw_path = parse_qs(parsed.query).get("path", [""])[0]
                 self.send_json(list_workspace_path(raw_path or None))
                 return
+            if parsed.path == "/api/memory":
+                q = parse_qs(parsed.query).get("q", [""])[0]
+                mission = parse_qs(parsed.query).get("mission", [""])[0]
+                tag = parse_qs(parsed.query).get("tag", [""])[0]
+                limit = int(parse_qs(parsed.query).get("limit", ["200"])[0])
+                self.send_json(memory_read(q=q, mission_id=mission, tag=tag, limit=limit))
+                return
             if parsed.path.startswith("/apcall/v1"):
                 self.handle_apcall_get(parsed)
                 return
@@ -2554,6 +2681,26 @@ class Handler(BaseHTTPRequestHandler):
             if self.path == "/api/killswitch":
                 self.send_json(killswitch())
                 return
+            if self.path == "/api/memory":
+                key = str(body.get("key") or "").strip()
+                if not key:
+                    raise RuntimeError("Memory key is required.")
+                self.send_json(memory_write(
+                    key=key,
+                    summary=str(body.get("summary") or ""),
+                    agent_id=str(body.get("agent_id") or ""),
+                    mission_id=str(body.get("mission_id") or ""),
+                    tags=str(body.get("tags") or ""),
+                    payload=str(body.get("payload") or ""),
+                ))
+                return
+            if self.path == "/api/memory/clear":
+                self.send_json(memory_clear())
+                return
+            mem_del = re.match(r"^/api/memory/(.+)$", urlparse(self.path).path)
+            if mem_del:
+                self.send_json(memory_delete(mem_del.group(1)))
+                return
             if self.path == "/api/settings":
                 self.send_json(save_settings(body))
                 return
@@ -2583,6 +2730,20 @@ class Handler(BaseHTTPRequestHandler):
         except Exception as exc:  # Keep UI errors readable.
             self.send_json({"error": str(exc)}, status=400)
 
+    def do_DELETE(self) -> None:  # noqa: N802
+        try:
+            if not self._authorized():
+                self.send_json({"error": "unauthorized"}, status=401)
+                return
+            parsed = urlparse(self.path)
+            mem_del = re.match(r"^/api/memory/(.+)$", parsed.path)
+            if mem_del:
+                self.send_json(memory_delete(mem_del.group(1)))
+                return
+            self.send_json({"error": "Unknown route"}, status=404)
+        except Exception as exc:
+            self.send_json({"error": str(exc)}, status=400)
+
     def log_message(self, fmt: str, *args: Any) -> None:
         print(f"[jarvis] {self.address_string()} {fmt % args}")
 
@@ -2593,7 +2754,10 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
     parser.add_argument("--no-tunnel", action="store_true", help="Skip Cloudflare Tunnel auto-start")
     args = parser.parse_args()
+    global SERVER_PORT
+    SERVER_PORT = args.port
     ensure_dirs()
+    memory_init()
     pin = ensure_pin()
     server = ThreadingHTTPServer((args.host, args.port), Handler)
     print(f"[jarvis] Local console : http://{args.host}:{args.port}")

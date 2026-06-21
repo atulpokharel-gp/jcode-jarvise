@@ -1531,6 +1531,79 @@ document.querySelectorAll("[data-template]").forEach((button) => {
   });
 });
 
+// ── Central Agent Memory ──────────────────────────────────────────────────
+const memoryBoard    = document.getElementById("memoryBoard");
+const memoryCount    = document.getElementById("memoryCount");
+const memorySearch   = document.getElementById("memorySearch");
+const memorySearchBtn  = document.getElementById("memorySearchBtn");
+const memoryRefreshBtn = document.getElementById("memoryRefreshBtn");
+const memoryClearBtn   = document.getElementById("memoryClearBtn");
+
+function tagColor(tags) {
+  if (!tags) return "var(--muted)";
+  const t = tags.toLowerCase();
+  if (t.includes("error") || t.includes("fail") || t.includes("block")) return "var(--red)";
+  if (t.includes("api") || t.includes("contract"))  return "var(--violet)";
+  if (t.includes("decision") || t.includes("arch")) return "var(--amber)";
+  if (t.includes("heal") || t.includes("repair"))   return "var(--heal)";
+  if (t.includes("qa") || t.includes("test"))       return "var(--blue)";
+  return "var(--cyan)";
+}
+
+function renderMemory(entries) {
+  memoryCount.textContent = `${entries.length} entr${entries.length === 1 ? "y" : "ies"}`;
+  if (!entries.length) {
+    memoryBoard.innerHTML = `<p class="subtle mem-empty">No memories yet. Agents write here automatically during missions.</p>`;
+    return;
+  }
+  memoryBoard.innerHTML = entries.map((m) => {
+    const date  = new Date(m.ts * 1000).toLocaleTimeString();
+    const color = tagColor(m.tags);
+    const tags  = (m.tags || "").split(",").filter(Boolean).map(
+      (t) => `<span class="mem-tag" style="border-color:${color};color:${color}">${t.trim()}</span>`
+    ).join("");
+    return `
+      <article class="mem-card" data-key="${m.key}">
+        <div class="mem-card-head">
+          <span class="mem-key">${m.key}</span>
+          <span class="mem-meta">${m.agent_id ? `<b>${m.agent_id}</b> · ` : ""}${date}</span>
+          <button class="mem-del-btn icon-btn" data-key="${m.key}" title="Delete">✕</button>
+        </div>
+        <p class="mem-summary">${m.summary}</p>
+        ${tags ? `<div class="mem-tags">${tags}</div>` : ""}
+        ${m.payload ? `<details class="mem-payload"><summary>payload</summary><pre>${m.payload}</pre></details>` : ""}
+      </article>`;
+  }).join("");
+
+  memoryBoard.querySelectorAll(".mem-del-btn").forEach((btn) => {
+    btn.addEventListener("click", async () => {
+      const key = btn.dataset.key;
+      if (!confirm(`Delete memory: "${key}"?`)) return;
+      await fetch(`/api/memory/${encodeURIComponent(key)}`, { method: "DELETE" });
+      loadMemory().catch(() => {});
+    });
+  });
+}
+
+async function loadMemory(q = "") {
+  const url = q ? `/api/memory?q=${encodeURIComponent(q)}` : "/api/memory";
+  const res  = await fetch(url);
+  const data = await res.json();
+  renderMemory(Array.isArray(data) ? data : []);
+}
+
+memorySearchBtn.addEventListener("click", () => loadMemory(memorySearch.value.trim()).catch(() => {}));
+memorySearch.addEventListener("keydown", (e) => { if (e.key === "Enter") loadMemory(memorySearch.value.trim()).catch(() => {}); });
+memoryRefreshBtn.addEventListener("click", () => loadMemory().catch(() => {}));
+memoryClearBtn.addEventListener("click", async () => {
+  if (!confirm("Clear ALL agent memories? This cannot be undone.")) return;
+  await fetch("/api/memory/clear", { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" });
+  loadMemory().catch(() => {});
+});
+
+setInterval(() => loadMemory(memorySearch.value.trim()).catch(() => {}), 8000);
+loadMemory().catch(() => {});
+
 setupVoice();
 updateTalkBackUi();
 pollTunnel();

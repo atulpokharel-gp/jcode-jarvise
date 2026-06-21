@@ -292,6 +292,29 @@
         </div>
         <div id="events" class="events"></div>
       </section>
+
+      <section class="memory-section" aria-label="Central agent memory">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">Shared Intelligence</p>
+            <h2>Central Agent Memory</h2>
+          </div>
+          <div class="head-actions">
+            <span id="memoryCount" class="badge">0 entries</span>
+            <button id="memoryClearBtn" class="danger">Clear All</button>
+          </div>
+        </div>
+        <p class="subtle">
+          Every agent reads and writes here via <code>$JARVIS_MEMORY_URL</code>.
+          API contracts, file locations, decisions, and blockers persist across the mission.
+        </p>
+        <div class="memory-toolbar">
+          <input id="memorySearch" placeholder="Search memories…" />
+          <button id="memorySearchBtn">Search</button>
+          <button id="memoryRefreshBtn">Refresh</button>
+        </div>
+        <div id="memoryBoard" class="memory-board"></div>
+      </section>
     </main>
 
     <div id="whiteboardModal" class="modal whiteboard-modal" hidden>
