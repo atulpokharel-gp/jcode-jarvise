@@ -40,10 +40,100 @@ PROCESSES: dict[str, subprocess.Popen[Any]] = {}
 DISPATCH_QUEUE: list[dict[str, Any]] = []  # pending healer/QA jobs waiting for a slot
 STATE_LOCK = threading.Lock()
 MEMORY_LOCK = threading.Lock()
-MEMORY_DB       = STATE_DIR / "memory.db"
-TEMPLATES_FILE  = STATE_DIR / "templates.json"
-COST_DB         = STATE_DIR / "cost.db"
+MEMORY_DB           = STATE_DIR / "memory.db"
+TEMPLATES_FILE      = STATE_DIR / "templates.json"
+COST_DB             = STATE_DIR / "cost.db"
+MCP_CONNECTORS_FILE = STATE_DIR / "mcp_connectors.json"
 SERVER_PORT = DEFAULT_PORT  # updated in main() to reflect --port flag
+
+MCP_CATALOG: list[dict[str, Any]] = [
+    {
+        "id": "github", "name": "GitHub", "emoji": "🐙", "accent": "#238636",
+        "description": "Repos, PRs, issues, code search, file access and CI status.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env_vars": [{"key": "GITHUB_PERSONAL_ACCESS_TOKEN", "label": "Personal Access Token", "secret": True, "placeholder": "ghp_..."}],
+        "tags": ["code", "vcs"],
+    },
+    {
+        "id": "figma", "name": "Figma", "emoji": "F", "accent": "#f24e1e",
+        "description": "Read Figma files, components, styles and design tokens for UI agents.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "figma-developer-mcp", "--stdio"],
+        "env_vars": [{"key": "FIGMA_API_KEY", "label": "Figma API Key", "secret": True, "placeholder": "figd_..."}],
+        "tags": ["design", "ui"],
+    },
+    {
+        "id": "slack", "name": "Slack", "emoji": "#", "accent": "#4a154b",
+        "description": "Read and post Slack messages, manage channels and workspaces.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-slack"],
+        "env_vars": [
+            {"key": "SLACK_BOT_TOKEN", "label": "Bot Token", "secret": True, "placeholder": "xoxb-..."},
+            {"key": "SLACK_TEAM_ID", "label": "Team ID", "secret": False, "placeholder": "T0XXXXXXX"},
+        ],
+        "tags": ["communication"],
+    },
+    {
+        "id": "linear", "name": "Linear", "emoji": "L", "accent": "#5e6ad2",
+        "description": "Create and manage Linear issues, projects and cycles.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-linear"],
+        "env_vars": [{"key": "LINEAR_API_KEY", "label": "API Key", "secret": True, "placeholder": "lin_api_..."}],
+        "tags": ["pm", "issues"],
+    },
+    {
+        "id": "notion", "name": "Notion", "emoji": "N", "accent": "#e8e8e8",
+        "description": "Read and write Notion pages, databases and blocks.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@notionhq/notion-mcp-server"],
+        "env_vars": [{"key": "NOTION_API_TOKEN", "label": "Integration Token", "secret": True, "placeholder": "secret_..."}],
+        "tags": ["docs", "pm"],
+    },
+    {
+        "id": "postgres", "name": "PostgreSQL", "emoji": "Pg", "accent": "#336791",
+        "description": "Query and inspect PostgreSQL databases. Read-only by default.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-postgres"],
+        "env_vars": [{"key": "POSTGRES_URL", "label": "Connection URL", "secret": True, "placeholder": "postgresql://user:pass@localhost/db"}],
+        "tags": ["database"],
+    },
+    {
+        "id": "brave-search", "name": "Brave Search", "emoji": "B", "accent": "#fb542b",
+        "description": "Web and local search via Brave Search API.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-brave-search"],
+        "env_vars": [{"key": "BRAVE_API_KEY", "label": "Brave API Key", "secret": True, "placeholder": "BSA..."}],
+        "tags": ["search", "web"],
+    },
+    {
+        "id": "stripe", "name": "Stripe", "emoji": "$", "accent": "#635bff",
+        "description": "Access Stripe payments, customers, subscriptions and invoices.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@stripe/mcp-server"],
+        "env_vars": [{"key": "STRIPE_SECRET_KEY", "label": "Secret Key", "secret": True, "placeholder": "sk_..."}],
+        "tags": ["payments"],
+    },
+    {
+        "id": "sentry", "name": "Sentry", "emoji": "!", "accent": "#fb4226",
+        "description": "Access Sentry issues, events and error tracking data.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@sentry/mcp-server"],
+        "env_vars": [
+            {"key": "SENTRY_AUTH_TOKEN", "label": "Auth Token", "secret": True, "placeholder": "sntrys_..."},
+            {"key": "SENTRY_HOST", "label": "Sentry Host", "secret": False, "placeholder": "sentry.io"},
+        ],
+        "tags": ["monitoring"],
+    },
+    {
+        "id": "puppeteer", "name": "Puppeteer", "emoji": "P", "accent": "#40b5f4",
+        "description": "Browser automation: navigate URLs, take screenshots, fill forms.",
+        "transport": "stdio", "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-puppeteer"],
+        "env_vars": [],
+        "tags": ["browser", "testing"],
+    },
+]
 
 # Model cost table: (input $/1M tokens, output $/1M tokens)
 MODEL_COSTS: dict[str, tuple[float, float]] = {
@@ -2121,6 +2211,107 @@ Steps:
     apcall(state, "master", resolver_id, "task.dispatch", {"branch": agent.get("branch")}, f"Conflict resolver launched for {agent.get('branch')}")
 
 
+# ── MCP Connector Hub ────────────────────────────────────────────────────────
+
+def mcp_connectors_load() -> list[dict[str, Any]]:
+    try:
+        return json.loads(MCP_CONNECTORS_FILE.read_text("utf-8")) if MCP_CONNECTORS_FILE.exists() else []
+    except Exception:
+        return []
+
+
+def mcp_connectors_save(connectors: list[dict[str, Any]]) -> None:
+    MCP_CONNECTORS_FILE.write_text(json.dumps(connectors, indent=2), "utf-8")
+
+
+def mcp_connector_add(body: dict[str, Any]) -> dict[str, Any]:
+    connectors = mcp_connectors_load()
+    catalog_id = str(body.get("catalog_id") or "custom")
+    entry = next((c for c in MCP_CATALOG if c["id"] == catalog_id), None)
+    conn_id = f"mcp-{int(time.time() * 1000)}"
+    connector: dict[str, Any] = {
+        "id": conn_id,
+        "catalog_id": catalog_id,
+        "name": str(body.get("name") or (entry["name"] if entry else "Custom")),
+        "enabled": True,
+        "transport": str(body.get("transport") or (entry.get("transport", "stdio") if entry else "stdio")),
+        "command": str(body.get("command") or (entry.get("command", "") if entry else "")),
+        "args": list(body.get("args") or (entry.get("args", []) if entry else [])),
+        "env": dict(body.get("env") or {}),
+        "url": str(body.get("url") or ""),
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    }
+    connectors.append(connector)
+    mcp_connectors_save(connectors)
+    return {"ok": True, "connector": connector}
+
+
+def mcp_connector_update(conn_id: str, body: dict[str, Any]) -> dict[str, Any]:
+    connectors = mcp_connectors_load()
+    for c in connectors:
+        if c["id"] == conn_id:
+            for field in ("name", "command", "url"):
+                if field in body:
+                    c[field] = str(body[field])
+            if "args" in body:
+                c["args"] = list(body["args"])
+            if "env" in body:
+                c["env"] = dict(body["env"])
+            if "enabled" in body:
+                c["enabled"] = bool(body["enabled"])
+            if "transport" in body:
+                c["transport"] = str(body["transport"])
+            mcp_connectors_save(connectors)
+            return {"ok": True, "connector": c}
+    raise RuntimeError(f"Connector {conn_id} not found")
+
+
+def mcp_connector_delete(conn_id: str) -> dict[str, Any]:
+    connectors = mcp_connectors_load()
+    updated = [c for c in connectors if c["id"] != conn_id]
+    if len(updated) == len(connectors):
+        raise RuntimeError(f"Connector {conn_id} not found")
+    mcp_connectors_save(updated)
+    return {"ok": True}
+
+
+def build_mcp_json() -> dict[str, Any]:
+    """Build the mcpServers dict from all enabled connectors."""
+    servers: dict[str, Any] = {}
+    for conn in mcp_connectors_load():
+        if not conn.get("enabled", True):
+            continue
+        key = re.sub(r"[^a-zA-Z0-9_]", "_", conn["id"])
+        env = dict(conn.get("env") or {})
+        transport = conn.get("transport", "stdio")
+        if transport in ("sse", "streamable-http"):
+            servers[key] = {"type": transport, "url": conn.get("url", "")}
+        else:
+            # Substitute {VAR} placeholders in args
+            args = []
+            for arg in (conn.get("args") or []):
+                if arg.startswith("{") and arg.endswith("}"):
+                    var = arg[1:-1]
+                    args.append(env.get(var, os.environ.get(var, arg)))
+                else:
+                    args.append(arg)
+            servers[key] = {
+                "type": "stdio",
+                "command": conn.get("command", "npx"),
+                "args": args,
+                "env": env,
+            }
+    return {"mcpServers": servers}
+
+
+def write_mcp_config(worktree: Path) -> None:
+    """Write .mcp.json to worktree so jcode picks up configured MCP servers."""
+    mcp = build_mcp_json()
+    if not mcp["mcpServers"]:
+        return
+    (worktree / ".mcp.json").write_text(json.dumps(mcp, indent=2), "utf-8")
+
+
 # ── Dependency-aware scheduling ──────────────────────────────────────────────
 
 PENDING_WORKERS: list[dict[str, Any]] = []  # workers held back by unmet dependencies
@@ -2248,6 +2439,7 @@ def _spawn_worker(
     branch = f"jarvis/{stamp}/{index}"
     worktree = WORKTREE_ROOT / stamp / f"agent-{index}"
     run(["git", "worktree", "add", "-B", branch, str(worktree), "HEAD"], cwd=workspace)
+    write_mcp_config(worktree)
     log_path = LOG_DIR / f"{agent_id}.log"
     agent: dict[str, Any] = {
         "id": agent_id,
@@ -3073,6 +3265,12 @@ class Handler(BaseHTTPRequestHandler):
                 mission_id = parse_qs(parsed.query).get("mission", [""])[0]
                 self.send_json(cost_summary(mission_id))
                 return
+            if parsed.path == "/api/mcp-connectors/catalog":
+                self.send_json({"catalog": MCP_CATALOG})
+                return
+            if parsed.path == "/api/mcp-connectors":
+                self.send_json({"connectors": mcp_connectors_load()})
+                return
             if parsed.path.startswith("/apcall/v1"):
                 self.handle_apcall_get(parsed)
                 return
@@ -3258,6 +3456,13 @@ class Handler(BaseHTTPRequestHandler):
             if mem_del:
                 self.send_json(memory_delete(mem_del.group(1)))
                 return
+            if self.path == "/api/mcp-connectors":
+                self.send_json(mcp_connector_add(body))
+                return
+            mcp_upd = re.match(r"^/api/mcp-connectors/([^/]+)$", urlparse(self.path).path)
+            if mcp_upd:
+                self.send_json(mcp_connector_update(mcp_upd.group(1), body))
+                return
             if self.path == "/api/settings":
                 self.send_json(save_settings(body))
                 return
@@ -3296,6 +3501,10 @@ class Handler(BaseHTTPRequestHandler):
             mem_del = re.match(r"^/api/memory/(.+)$", parsed.path)
             if mem_del:
                 self.send_json(memory_delete(mem_del.group(1)))
+                return
+            mcp_del = re.match(r"^/api/mcp-connectors/([^/]+)$", parsed.path)
+            if mcp_del:
+                self.send_json(mcp_connector_delete(mcp_del.group(1)))
                 return
             self.send_json({"error": "Unknown route"}, status=404)
         except Exception as exc:

@@ -392,6 +392,33 @@
         </div>
         <div id="memoryBoard" class="memory-board"></div>
       </section>
+
+      <!-- MCP Connector Hub -->
+      <section class="mcp-hub" aria-label="MCP Connector Hub">
+        <header class="section-head">
+          <div>
+            <p class="eyebrow">Tool Integration</p>
+            <h2>MCP Connector Hub</h2>
+          </div>
+          <div class="mcp-hub-controls">
+            <input id="mcpFilter" type="text" placeholder="Filter connectors…" />
+            <button id="addCustomMcpBtn">+ Custom MCP</button>
+          </div>
+        </header>
+        <p class="subtle">
+          Add MCP servers so every agent spawned by Jarvis can use real-world tools —
+          read GitHub repos, query Notion, search the web and more. Connectors are
+          written to <code>.mcp.json</code> in each agent worktree automatically.
+        </p>
+
+        <div id="mcpConnectedSection" class="mcp-connected-section" hidden>
+          <h3 class="mcp-subsection-head">Active Connectors</h3>
+          <div id="mcpConnectedList" class="mcp-card-grid"></div>
+        </div>
+
+        <h3 class="mcp-subsection-head">Catalog</h3>
+        <div id="mcpCatalog" class="mcp-card-grid"></div>
+      </section>
     </main>
 
     <div id="whiteboardModal" class="modal whiteboard-modal" hidden>
@@ -505,6 +532,54 @@
           <button id="closeTimelineModal">Close</button>
         </header>
         <div id="timelineContent" class="timeline-content"></div>
+      </div>
+    </div>
+
+    <!-- MCP Configure Modal -->
+    <div id="mcpConfigModal" class="modal" hidden>
+      <div class="modal-panel mcp-config-panel">
+        <header class="modal-head">
+          <div>
+            <p class="eyebrow" id="mcpConfigEyebrow">Configure Connector</p>
+            <h2 id="mcpConfigTitle">MCP Server</h2>
+          </div>
+          <button id="closeMcpConfig">Close</button>
+        </header>
+        <p id="mcpConfigDesc" class="subtle"></p>
+
+        <div id="mcpConfigEnvFields"></div>
+
+        <div id="mcpConfigCustomFields" hidden>
+          <label>Connector Name</label>
+          <input id="mcpConfigName" type="text" placeholder="My Custom Connector" />
+
+          <label>Transport</label>
+          <select id="mcpConfigTransport">
+            <option value="stdio">stdio — local process (npx / binary)</option>
+            <option value="sse">SSE — HTTP Server-Sent Events</option>
+            <option value="streamable-http">Streamable HTTP</option>
+          </select>
+
+          <div id="mcpConfigStdioFields">
+            <label>Command</label>
+            <input id="mcpConfigCommand" type="text" placeholder="npx" />
+            <label>Args (space-separated)</label>
+            <input id="mcpConfigArgs" type="text" placeholder="-y @your/mcp-server" />
+          </div>
+
+          <div id="mcpConfigHttpFields" hidden>
+            <label>Server URL</label>
+            <input id="mcpConfigUrl" type="url" placeholder="https://mcp.example.com/sse" />
+          </div>
+
+          <label>Environment Variables (optional, one KEY=value per line)</label>
+          <textarea id="mcpConfigCustomEnv" rows="4" placeholder="MY_API_KEY=secret123&#10;BASE_URL=https://api.example.com"></textarea>
+        </div>
+
+        <div class="controls">
+          <button id="saveMcpConfig" class="primary">Save &amp; Connect</button>
+          <button id="cancelMcpConfig">Cancel</button>
+        </div>
       </div>
     </div>
 

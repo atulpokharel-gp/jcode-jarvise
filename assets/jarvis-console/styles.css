@@ -1520,6 +1520,152 @@ pre {
 }
 .mem-payload pre { margin: 6px 0 0; min-height: auto; font-size: 11px; max-height: 120px; }
 
+/* ── MCP Connector Hub ──────────────────────────────────────── */
+.mcp-hub {
+  grid-column: 1 / -1;
+  background: rgba(0,240,255,0.02);
+  border: 1px solid rgba(0,240,255,0.10);
+  border-radius: 12px;
+  padding: 28px 28px 32px;
+  position: relative;
+}
+.mcp-hub-controls {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+}
+.mcp-hub-controls input {
+  background: rgba(0,0,0,0.4); border: 1px solid rgba(0,240,255,0.18);
+  border-radius: 6px; color: var(--text); padding: 7px 14px;
+  font-family: 'Share Tech Mono', monospace; font-size: 12px;
+  width: 200px; transition: border-color 0.2s;
+}
+.mcp-hub-controls input:focus { outline: none; border-color: var(--cyan); }
+.mcp-subsection-head {
+  font-family: 'Orbitron', sans-serif; font-size: 10px; font-weight: 700;
+  letter-spacing: 0.18em; text-transform: uppercase; color: var(--muted);
+  margin: 22px 0 12px; border-bottom: 1px solid rgba(0,240,255,0.08);
+  padding-bottom: 6px;
+}
+.mcp-connected-section { margin-bottom: 4px; }
+
+/* Card grid */
+.mcp-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 14px;
+}
+
+/* Individual card */
+.mcp-card {
+  background: rgba(5,5,15,0.85);
+  border: 1px solid rgba(255,255,255,0.06);
+  border-radius: 10px;
+  overflow: hidden;
+  display: flex; flex-direction: column;
+  transition: transform 0.18s, border-color 0.2s, box-shadow 0.2s;
+  position: relative;
+}
+.mcp-card:hover {
+  transform: translateY(-2px);
+  border-color: rgba(var(--mcp-accent, 0,240,255), 0.3);
+  box-shadow: 0 6px 24px rgba(0,0,0,0.5), 0 0 20px rgba(0,240,255,0.04);
+}
+.mcp-card--on {
+  border-color: color-mix(in srgb, var(--mcp-accent) 35%, transparent);
+  box-shadow: 0 0 18px color-mix(in srgb, var(--mcp-accent) 12%, transparent);
+}
+.mcp-accent-bar {
+  height: 3px;
+  background: var(--mcp-accent, var(--cyan));
+  box-shadow: 0 0 8px var(--mcp-accent, var(--cyan));
+  flex-shrink: 0;
+}
+.mcp-card-body {
+  display: flex; align-items: flex-start; gap: 12px;
+  padding: 14px 14px 8px; flex: 1;
+}
+.mcp-icon {
+  font-size: 22px; min-width: 36px; height: 36px; line-height: 36px;
+  text-align: center; flex-shrink: 0;
+  background: rgba(255,255,255,0.04); border-radius: 8px;
+}
+.mcp-card-info { flex: 1; min-width: 0; }
+.mcp-name {
+  font-family: 'Orbitron', sans-serif; font-size: 11px; font-weight: 700;
+  letter-spacing: 0.06em; display: block; color: var(--text);
+  margin-bottom: 4px;
+}
+.mcp-tags { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 6px; }
+.mcp-tag {
+  font-size: 9px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+  padding: 2px 7px; border-radius: 999px;
+  background: rgba(0,240,255,0.06); border: 1px solid rgba(0,240,255,0.15);
+  color: var(--cyan);
+}
+.mcp-desc {
+  font-family: 'Share Tech Mono', monospace; font-size: 11px;
+  line-height: 1.5; color: var(--muted); margin: 0; overflow-wrap: anywhere;
+}
+.mcp-card-foot {
+  display: flex; align-items: center; justify-content: space-between;
+  padding: 8px 14px 12px; gap: 8px; flex-wrap: wrap;
+}
+.mcp-dot {
+  font-family: 'Share Tech Mono', monospace; font-size: 10px; color: var(--muted);
+}
+.mcp-dot--on {
+  color: var(--green); text-shadow: 0 0 8px var(--green);
+  animation: activeNode 2s infinite;
+}
+.mcp-actions { display: flex; gap: 6px; flex-shrink: 0; }
+.mcp-btn {
+  font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.08em; padding: 5px 12px; border-radius: 5px; cursor: pointer;
+  border: 1px solid rgba(0,240,255,0.25); background: rgba(0,240,255,0.06);
+  color: var(--cyan); text-transform: uppercase; transition: all 0.15s;
+  min-height: auto;
+}
+.mcp-btn:hover { background: rgba(0,240,255,0.14); border-color: var(--cyan); }
+.mcp-btn-connect {
+  background: rgba(0,255,157,0.07); border-color: rgba(0,255,157,0.3); color: var(--green);
+}
+.mcp-btn-connect:hover { background: rgba(0,255,157,0.16); border-color: var(--green); }
+.mcp-btn-remove {
+  background: rgba(255,0,85,0.06); border-color: rgba(255,0,85,0.2); color: var(--red);
+}
+.mcp-btn-remove:hover { background: rgba(255,0,85,0.15); border-color: var(--red); }
+
+/* MCP configure modal */
+.mcp-config-panel { max-width: 520px; }
+.mcp-config-panel label {
+  display: block; font-size: 10px; font-weight: 700; letter-spacing: 0.1em;
+  text-transform: uppercase; color: var(--muted); margin: 14px 0 5px;
+}
+.mcp-config-panel input,
+.mcp-config-panel select,
+.mcp-config-panel textarea {
+  width: 100%; box-sizing: border-box;
+  background: rgba(0,0,0,0.5); border: 1px solid rgba(0,240,255,0.18);
+  border-radius: 6px; color: var(--text); padding: 9px 12px;
+  font-family: 'Share Tech Mono', monospace; font-size: 13px;
+  transition: border-color 0.2s; resize: vertical;
+}
+.mcp-config-panel input:focus,
+.mcp-config-panel select:focus,
+.mcp-config-panel textarea:focus {
+  outline: none; border-color: var(--cyan);
+  box-shadow: 0 0 0 2px rgba(0,240,255,0.07);
+}
+.mcp-secret-row { display: flex; gap: 6px; align-items: center; }
+.mcp-secret-row input { flex: 1; }
+.mcp-show-btn {
+  font-family: 'Orbitron', sans-serif; font-size: 9px; font-weight: 700;
+  letter-spacing: 0.08em; padding: 6px 10px; border-radius: 5px; cursor: pointer;
+  border: 1px solid rgba(0,240,255,0.2); background: rgba(0,240,255,0.05);
+  color: var(--cyan); text-transform: uppercase; white-space: nowrap;
+  min-height: auto;
+}
+.mcp-show-btn:hover { background: rgba(0,240,255,0.12); }
+
 /* ── Scrollbars ──────────────────────────────────────────────── */
 ::-webkit-scrollbar       { width: 4px; height: 4px; }
 ::-webkit-scrollbar-track { background: rgba(0,240,255,0.03); }

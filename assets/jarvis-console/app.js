@@ -2278,6 +2278,250 @@ memoryClearBtn.addEventListener("click", async () => {
 setInterval(() => loadMemory(memorySearch.value.trim()).catch(() => {}), 8000);
 loadMemory().catch(() => {});
 
+// ── MCP Connector Hub ─────────────────────────────────────────────────────────
+
+const mcpFilter            = document.querySelector("#mcpFilter");
+const addCustomMcpBtn      = document.querySelector("#addCustomMcpBtn");
+const mcpCatalogEl         = document.querySelector("#mcpCatalog");
+const mcpConnectedSection  = document.querySelector("#mcpConnectedSection");
+const mcpConnectedList     = document.querySelector("#mcpConnectedList");
+const mcpConfigModal       = document.querySelector("#mcpConfigModal");
+const closeMcpConfig       = document.querySelector("#closeMcpConfig");
+const cancelMcpConfig      = document.querySelector("#cancelMcpConfig");
+const saveMcpConfigBtn     = document.querySelector("#saveMcpConfig");
+const mcpConfigTitle       = document.querySelector("#mcpConfigTitle");
+const mcpConfigDesc        = document.querySelector("#mcpConfigDesc");
+const mcpConfigEyebrow     = document.querySelector("#mcpConfigEyebrow");
+const mcpConfigEnvFields   = document.querySelector("#mcpConfigEnvFields");
+const mcpConfigCustomFields= document.querySelector("#mcpConfigCustomFields");
+const mcpConfigTransport   = document.querySelector("#mcpConfigTransport");
+const mcpConfigStdioFields = document.querySelector("#mcpConfigStdioFields");
+const mcpConfigHttpFields  = document.querySelector("#mcpConfigHttpFields");
+const mcpConfigCommand     = document.querySelector("#mcpConfigCommand");
+const mcpConfigArgs        = document.querySelector("#mcpConfigArgs");
+const mcpConfigUrl         = document.querySelector("#mcpConfigUrl");
+const mcpConfigName        = document.querySelector("#mcpConfigName");
+const mcpConfigCustomEnv   = document.querySelector("#mcpConfigCustomEnv");
+
+let mcpCatalogData   = [];
+let mcpConnectors    = [];
+let mcpEditingId     = null;
+let mcpCurrentEntry  = null;
+
+// MCP brand emoji map — falls back to first letter
+const MCP_EMOJI = {
+  github: "🐙", figma: "🎨", slack: "💬", linear: "📋",
+  notion: "📝", postgres: "🐘", "brave-search": "🔍",
+  stripe: "💳", sentry: "🚨", puppeteer: "🤖",
+};
+
+async function loadMcpHub() {
+  try {
+    const [catRes, connRes] = await Promise.all([
+      fetch("/api/mcp-connectors/catalog").then(r => r.json()),
+      fetch("/api/mcp-connectors").then(r => r.json()),
+    ]);
+    mcpCatalogData = catRes.catalog || [];
+    mcpConnectors  = connRes.connectors || [];
+    renderMcpHub();
+  } catch (_) {}
+}
+
+function activeCatalogConn(catalogId) {
+  return mcpConnectors.find(c => c.catalog_id === catalogId && c.enabled !== false);
+}
+
+function renderMcpCard(entry, conn) {
+  const connected = !!conn;
+  const emoji = MCP_EMOJI[entry.id] || (entry.emoji?.length <= 2 ? entry.emoji : entry.id[0].toUpperCase());
+  const tags  = (entry.tags || []).map(t => `<span class="mcp-tag">${t}</span>`).join("");
+  const actions = connected
+    ? `<button class="mcp-btn mcp-btn-edit" data-id="${conn.id}">Edit</button>
+       <button class="mcp-btn mcp-btn-remove" data-id="${conn.id}">Remove</button>`
+    : `<button class="mcp-btn mcp-btn-connect" data-catalog="${entry.id}">Connect</button>`;
+  return `
+    <div class="mcp-card${connected ? " mcp-card--on" : ""}" style="--mcp-accent:${entry.accent || "#00f0ff"}">
+      <div class="mcp-accent-bar"></div>
+      <div class="mcp-card-body">
+        <span class="mcp-icon">${emoji}</span>
+        <div class="mcp-card-info">
+          <strong class="mcp-name">${entry.name}</strong>
+          <div class="mcp-tags">${tags}</div>
+          <p class="mcp-desc">${entry.description}</p>
+        </div>
+      </div>
+      <div class="mcp-card-foot">
+        <span class="mcp-dot${connected ? " mcp-dot--on" : ""}">
+          ${connected ? "● Connected" : "○ Not configured"}
+        </span>
+        <div class="mcp-actions">${actions}</div>
+      </div>
+    </div>`;
+}
+
+function renderMcpHub() {
+  const q = (mcpFilter?.value || "").toLowerCase().trim();
+  const filtered = mcpCatalogData.filter(e =>
+    !q ||
+    e.name.toLowerCase().includes(q) ||
+    e.description.toLowerCase().includes(q) ||
+    (e.tags || []).some(t => t.includes(q))
+  );
+
+  // Custom connectors (catalog_id === "custom") go in the active section
+  const customConns = mcpConnectors.filter(c => c.catalog_id === "custom" && c.enabled !== false);
+  if (customConns.length) {
+    mcpConnectedSection.hidden = false;
+    mcpConnectedList.innerHTML = customConns.map(c => renderMcpCard(
+      { id: "custom", name: c.name, accent: "#00f0ff", description: c.transport === "stdio"
+          ? `${c.command} ${(c.args || []).join(" ")}`.trim()
+          : c.url,
+        tags: ["custom"], emoji: "⚡" },
+      c
+    )).join("");
+    attachMcpCardEvents(mcpConnectedList);
+  } else {
+    mcpConnectedSection.hidden = true;
+  }
+
+  mcpCatalogEl.innerHTML = filtered.map(entry => {
+    const conn = activeCatalogConn(entry.id);
+    return renderMcpCard(entry, conn);
+  }).join("");
+  attachMcpCardEvents(mcpCatalogEl);
+}
+
+function attachMcpCardEvents(container) {
+  container.querySelectorAll(".mcp-btn-connect").forEach(btn => {
+    btn.addEventListener("click", () => openMcpConfig(btn.dataset.catalog, null));
+  });
+  container.querySelectorAll(".mcp-btn-edit").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const conn = mcpConnectors.find(c => c.id === btn.dataset.id);
+      if (conn) openMcpConfig(conn.catalog_id, conn);
+    });
+  });
+  container.querySelectorAll(".mcp-btn-remove").forEach(btn => {
+    btn.addEventListener("click", async () => {
+      if (!confirm("Remove this MCP connector?")) return;
+      await fetch(`/api/mcp-connectors/${btn.dataset.id}`, { method: "DELETE" });
+      loadMcpHub().catch(() => {});
+    });
+  });
+}
+
+function openMcpConfig(catalogId, existingConn) {
+  const entry = mcpCatalogData.find(c => c.id === catalogId)
+    || { id: "custom", name: "Custom", accent: "#00f0ff", description: "Custom MCP server.",
+         env_vars: [], transport: "stdio", command: "", args: [], tags: ["custom"] };
+
+  mcpCurrentEntry = entry;
+  mcpEditingId    = existingConn?.id || null;
+
+  mcpConfigTitle.textContent   = entry.name;
+  mcpConfigDesc.textContent    = entry.description;
+  mcpConfigEyebrow.textContent = mcpEditingId ? "Edit Connector" : "Connect";
+
+  const isCustom = entry.id === "custom";
+  mcpConfigCustomFields.hidden = !isCustom;
+
+  if (isCustom) {
+    mcpConfigName.value      = existingConn?.name || "";
+    mcpConfigTransport.value = existingConn?.transport || "stdio";
+    mcpConfigCommand.value   = existingConn?.command || "";
+    mcpConfigArgs.value      = (existingConn?.args || []).join(" ");
+    mcpConfigUrl.value       = existingConn?.url || "";
+    // Rebuild custom env textarea
+    const env = existingConn?.env || {};
+    mcpConfigCustomEnv.value = Object.entries(env).map(([k, v]) => `${k}=${v}`).join("\n");
+    updateMcpTransport();
+  }
+
+  // Build catalog env var fields
+  mcpConfigEnvFields.innerHTML = (entry.env_vars || []).map(ev => {
+    const val = (existingConn?.env || {})[ev.key] || "";
+    return `
+      <label for="mcpEnv_${ev.key}">${ev.label}</label>
+      <div class="mcp-secret-row">
+        <input id="mcpEnv_${ev.key}" type="${ev.secret ? "password" : "text"}"
+               data-key="${ev.key}" value="${val}"
+               placeholder="${ev.placeholder || ""}" class="mcp-env-input" />
+        ${ev.secret ? `<button type="button" class="mcp-show-btn" data-tgt="mcpEnv_${ev.key}">show</button>` : ""}
+      </div>`;
+  }).join("");
+
+  mcpConfigEnvFields.querySelectorAll(".mcp-show-btn").forEach(btn => {
+    btn.addEventListener("click", () => {
+      const inp = document.getElementById(btn.dataset.tgt);
+      if (inp.type === "password") { inp.type = "text"; btn.textContent = "hide"; }
+      else                          { inp.type = "password"; btn.textContent = "show"; }
+    });
+  });
+
+  mcpConfigModal.hidden = false;
+}
+
+function updateMcpTransport() {
+  const isHttp = mcpConfigTransport?.value !== "stdio";
+  if (mcpConfigStdioFields) mcpConfigStdioFields.hidden = isHttp;
+  if (mcpConfigHttpFields)  mcpConfigHttpFields.hidden  = !isHttp;
+}
+
+async function saveMcpConnector() {
+  const entry    = mcpCurrentEntry;
+  const isCustom = entry.id === "custom";
+  const env      = {};
+
+  // Collect named env var inputs
+  document.querySelectorAll(".mcp-env-input").forEach(inp => {
+    if (inp.value.trim()) env[inp.dataset.key] = inp.value.trim();
+  });
+
+  // Collect custom env textarea
+  if (isCustom && mcpConfigCustomEnv.value.trim()) {
+    mcpConfigCustomEnv.value.trim().split("\n").forEach(line => {
+      const idx = line.indexOf("=");
+      if (idx > 0) {
+        const k = line.slice(0, idx).trim();
+        const v = line.slice(idx + 1).trim();
+        if (k) env[k] = v;
+      }
+    });
+  }
+
+  const body = {
+    catalog_id: entry.id,
+    name:       isCustom ? (mcpConfigName.value.trim() || "Custom") : entry.name,
+    env,
+  };
+
+  if (isCustom) {
+    body.transport = mcpConfigTransport.value;
+    if (body.transport === "stdio") {
+      body.command = mcpConfigCommand.value.trim();
+      body.args    = mcpConfigArgs.value.trim().split(/\s+/).filter(Boolean);
+    } else {
+      body.url = mcpConfigUrl.value.trim();
+    }
+  }
+
+  const url    = mcpEditingId ? `/api/mcp-connectors/${mcpEditingId}` : "/api/mcp-connectors";
+  await fetch(url, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+  mcpConfigModal.hidden = true;
+  loadMcpHub().catch(() => {});
+}
+
+closeMcpConfig?.addEventListener("click",    () => { mcpConfigModal.hidden = true; });
+cancelMcpConfig?.addEventListener("click",   () => { mcpConfigModal.hidden = true; });
+saveMcpConfigBtn?.addEventListener("click",  saveMcpConnector);
+addCustomMcpBtn?.addEventListener("click",   () => openMcpConfig("custom", null));
+mcpFilter?.addEventListener("input",         renderMcpHub);
+mcpConfigTransport?.addEventListener("change", updateMcpTransport);
+
+loadMcpHub().catch(() => {});
+
+// ── End MCP Connector Hub ─────────────────────────────────────────────────────
+
 setupVoice();
 updateTalkBackUi();
 pollTunnel();
